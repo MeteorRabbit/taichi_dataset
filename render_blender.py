@@ -5,20 +5,20 @@ import sys
 import math
 import json
 from mathutils import Vector
-# --blender做粒子转网格处理demo
-# --- Configuration ---
-# You can change these or pass them via command line if you extend the script
-INPUT_DIR = os.path.abspath("D:/Experiments/gic/taichi_dataset/output_npy/output_newtonian")
-OUTPUT_DIR = os.path.abspath("D:/Experiments/gic/taichi_dataset/render_output")
-MATERIAL_TYPE = "toothpaste_custom" # Options: water, sand, elastic, plasticine, toothpaste, cream
+# -- Blender 粒子转网格处理示例脚本
+# --- 配置 ---
+# 如果扩展此脚本，可以更改这些设置或通过命令行传递
+INPUT_DIR = os.path.abspath("D:/Experiments/gic/taichi_dataset/output_npy/output_elasticity")
+OUTPUT_DIR = os.path.abspath("D:/Experiments/gic/taichi_dataset/render_output/elasticity")
+MATERIAL_TYPE = "toothpaste_custom" # 可选: water, sand, elastic, plasticine, toothpaste, cream
 
-# Particle settings
+# 粒子设置
 PARTICLE_RADIUS = 0.008
 RESOLUTION_PERCENT = 100
-RENDER_ENGINE = 'CYCLES' # 'CYCLES' or 'BLENDER_EEVEE'
+RENDER_ENGINE = 'CYCLES' # 'CYCLES' 或 'BLENDER_EEVEE'
 SAMPLES = 128
 
-# --- Material Presets ---
+# --- 材质预设 ---
 MATERIALS = {
     "water": {"color": (0.1, 0.3, 0.9, 1), "roughness": 0.0, "transmission": 1.0, "ior": 1.33},
     "sand": {"color": (0.76, 0.6, 0.4, 1), "roughness": 1.0, "transmission": 0.0, "ior": 1.45},
@@ -31,19 +31,17 @@ MATERIALS = {
 }
 
 def clean_scene():
-    # Select all objects
+    # 选中所有物体
     bpy.ops.object.select_all(action='SELECT')
 
-    # If a 'floor' object exists, deselect it so it is not deleted
+    # 如果存在 'Floor' 物体，取消选中它以免被删除
     if 'Floor' in bpy.data.objects:
         bpy.data.objects['Floor'].select_set(False)
 
-    # Delete all selected objects (everything except 'floor')
+    # 删除选中的物体（保留 'Floor'）
     bpy.ops.object.delete()
 
-    # Remove orphaned data-blocks (those with no users).
-    # This is a safer way to clean the scene and will preserve the data
-    # (like mesh and material) used by the 'floor' object.
+    # 清理无用的数据块 (mesh, material 等)
     for block in bpy.data.meshes:
         if not block.users: bpy.data.meshes.remove(block)
     for block in bpy.data.materials:
@@ -82,30 +80,9 @@ def setup_cameras():
 
     # 创建相机
     for i, point in enumerate(sphere_points):
-        # 缩放点到半径为0.8的球面 (Logic from duck script)
-        # Note: Original script had 0.8 radius. 
-        # In this scene, object might be small? 
-        # Previous camera was at (1.5, 1.2, 2.0) ~ dist 2.7. 
-        # 0.8 might be too close for this scene if it's the same scale.
-        # But user said "learn the pattern". 
-        # I'll stick to 0.8 or maybe slightly adjust if I see the scene scale is different?
-        # The duck script assumes a specific object size. 
-        # The taichi simulation likely fits in [0,1]^3 box. Center is roughly 0.5.
-        # Radius 0.8 around (0,0,0) might be looking at the corner box effectively?
-        # Wait, the previous setup_camera tracked (0.5, 0.5, 0.5).
-        # Duck script tracks (0,0,0) (implied by just creating at location and rotating to look at origin mostly? or just placement).
-        # Duck script: direction = Vector((0, 0, 0.1)) - scaled_point. Looks at (0,0,0.1).
-        # THIS scene (MPM) is usually in 0..1 coordinates.
-        # So I should probably center the cameras around (0.5, 0.5, 0.5) 
-        # OR move the object to (0,0,0). 
-        # But `render_blender` keeps object in place.
-        # Let's check `setup_camera` again. 
-        # "Center_empty.location = (0.5, 0.5, 0.5)"
-        # So I should offset my sphere center to (0.5, 0.5, 0.5).
-        
+        # 围绕中心 (0, 0.005, 0)
         center_offset = Vector((0, 0.005, 0))
-        r = 2.0 # Increased from 0.8 because 0.5 is center, need to see the whole 0..1 box.
-        # Previous manual camera was at (1.5, 1.2, 2.0) -> dist ~1.8 from center.
+        r = 2.0 # 半径设为 2.0 以确保能看到整个场景
         
         scaled_point = Vector((point[0]*r, point[1]*r, point[2]*r)) + center_offset
         
@@ -115,8 +92,6 @@ def setup_cameras():
         cam.name = f"Camera_{i+1}"
         
         # 使相机朝向中心 (0, 0.005, 0)
-        # Duck script looked at (0, 0, 0.1). 
-        # We will look at (0, 0.005, 0) (center of sim box).
         direction = center_offset - scaled_point
         rot_quat = direction.to_track_quat('-Z', 'Y')
         cam.rotation_euler = rot_quat.to_euler()
@@ -202,119 +177,100 @@ def create_material(mat_type):
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     
-    # Clear default nodes
+    # 清空默认节点
     nodes.clear()
     
-    # Create Principled BSDF
+    # 创建 Principled BSDF
     shader = nodes.new(type='ShaderNodeBsdfPrincipled')
     shader.location = (0, 0)
     
-    # Create Output
+    # 创建输出
     output = nodes.new(type='ShaderNodeOutputMaterial')
     output.location = (300, 0)
     
     links.new(shader.outputs[0], output.inputs[0])
     
-    # Set properties for Blender 4.0+
+    # 设置属性 (兼容 Blender 4.0+)
     props = MATERIALS.get(mat_type, MATERIALS["non_newtonian"])
     
     shader.inputs['Base Color'].default_value = props.get("color", (1,1,1,1))
     shader.inputs['Roughness'].default_value = props.get("roughness", 0.5)
     
-    # Blender 4.0+ changes
     if 'Transmission Weight' in shader.inputs:
         shader.inputs['Transmission Weight'].default_value = props.get("transmission", 0.0)
     elif 'Transmission' in shader.inputs:
         shader.inputs['Transmission'].default_value = props.get("transmission", 0.0)
         
     shader.inputs['IOR'].default_value = props.get("ior", 1.45)
-    
-    if "subsurface" in props:
-        # Temporarily disable SSS to debug "black object" issue
-        # SSS on very small particles often causes black artifacts in Cycles if scale is wrong
-        pass 
-        # if 'Subsurface Weight' in shader.inputs:
-        #      shader.inputs['Subsurface Weight'].default_value = props["subsurface"]
-        # elif 'Subsurface' in shader.inputs:
-        #      shader.inputs['Subsurface'].default_value = props["subsurface"]
-        
-        # # Fix for black particles: Set Subsurface Scale to match particle size
-        # # Default is 1.0 (meters), which is too big for 0.008 particles
-        # if 'Subsurface Scale' in shader.inputs:
-        #     shader.inputs['Subsurface Scale'].default_value = PARTICLE_RADIUS * 2.0
-             
-        # # Subsurface Color is removed in 4.0, it uses Base Color and Radius
-        # if 'Subsurface Color' in shader.inputs:
-        #     shader.inputs['Subsurface Color'].default_value = props.get("color", (1,1,1,1))
 
     return mat
 
 def setup_particles():
-    # 1. Create the Container Mesh (Vertices only)
+    # 1. 创建容器网格 (仅顶点)
     mesh = bpy.data.meshes.new("ParticleContainer")
     container = bpy.data.objects.new("ParticleContainer", mesh)
     bpy.context.collection.objects.link(container)
     
-    # 2. Add Geometry Nodes Modifier for Meshing
+    # 2. 添加 Geometry Nodes 修改器用于网格化
     mod = container.modifiers.new(name="Meshing", type='NODES')
     node_group = mod.node_group
     if not node_group:
         node_group = bpy.data.node_groups.new(name="MeshingGroup", type='GeometryNodeTree')
         mod.node_group = node_group
         
-    # Clear default nodes
+    # 清空默认节点
     node_group.nodes.clear()
     
-    # Create Nodes
-    # Input
+    # 创建节点
+    # 输入 Input
     input_node = node_group.nodes.new('NodeGroupInput')
     input_node.location = (-400, 0)
     node_group.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
     
-    # Points to Volume
+    # 点转体积 Points to Volume
     p2v_node = node_group.nodes.new('GeometryNodePointsToVolume')
     p2v_node.location = (-200, 0)
-    p2v_node.inputs['Radius'].default_value = PARTICLE_RADIUS * 2.5 # Increased radius for smoother blending
-    p2v_node.inputs['Voxel Amount'].default_value = 256 # Higher resolution
+    p2v_node.inputs['Radius'].default_value = PARTICLE_RADIUS * 2.5 # 增加半径以平滑融合
+    p2v_node.inputs['Voxel Amount'].default_value = 256 # 更高分辨率
     p2v_node.inputs['Density'].default_value = 10.0
     
-    # Volume to Mesh
+    # 体积转网格 Volume to Mesh
     v2m_node = node_group.nodes.new('GeometryNodeVolumeToMesh')
     v2m_node.location = (0, 0)
     v2m_node.inputs['Threshold'].default_value = 0.3
     v2m_node.inputs['Adaptivity'].default_value = 0.0
     
-    # --- Smoothing (Laplacian Smooth via Blur Attribute) ---
+    # --- 平滑处理 (Laplacian Smooth via Blur Attribute) ---
     # Set Position
     set_pos_node = node_group.nodes.new('GeometryNodeSetPosition')
     set_pos_node.location = (200, 0)
     
-    # Position Input
+    # 位置输入 Position Input
     pos_input_node = node_group.nodes.new('GeometryNodeInputPosition')
     pos_input_node.location = (0, -200)
     
-    # Blur Attribute
+    # 模糊属性 Blur Attribute
     blur_node = node_group.nodes.new('GeometryNodeBlurAttribute')
     blur_node.location = (200, -200)
     blur_node.data_type = 'FLOAT_VECTOR'
-    blur_node.inputs['Iterations'].default_value = 6 # Smooth iterations
+    blur_node.inputs['Iterations'].default_value = 6 # 平滑迭代次数
     
-    # Set Shade Smooth
+    # 设置平滑着色 Set Shade Smooth
     smooth_node = node_group.nodes.new('GeometryNodeSetShadeSmooth')
     smooth_node.location = (400, 0)
 
-    # Subdivision Surface
+    # 细分曲面 Subdivision Surface
     subdiv_node = node_group.nodes.new('GeometryNodeSubdivisionSurface')
     subdiv_node.location = (600, 0)
     subdiv_node.inputs['Level'].default_value = 1
     
-    # Set Material
+    # 设置材质 Set Material
     mat_node = node_group.nodes.new('GeometryNodeSetMaterial')
     mat_node.location = (800, 0)
     mat = create_material(MATERIAL_TYPE)
     mat_node.inputs['Material'].default_value = mat
     
-    # Output
+    # 输出 Output
     output_node = node_group.nodes.new('NodeGroupOutput')
     output_node.location = (1000, 0)
     node_group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
@@ -360,24 +316,24 @@ def update_mesh_for_frame(container, frame_idx):
         mesh.update()
 
 def main(should_render=None):
-    # Parse arguments
-    # Look for "--render" in command line args
+    # 解析参数
+    # 如果未指定 should_render，则检查命令行参数 "--render"
     if should_render is None:
         should_render = "--render" in sys.argv
-    print(f"Render mode: {'ENABLED' if should_render else 'DISABLED'}")
+    print(f"渲染模式: {'启用' if should_render else '禁用'}")
 
     clean_scene()
     
-    # 1. Setup Cameras (Fibonacci Sphere)
+    # 1. 设置相机 (Fibonacci Sphere)
     cameras = setup_cameras()
     
-    # 2. Lighting (Commented out as requested)
+    # 2. 灯光设置 (已注释，保留手动设置)
     # setup_lighting()
     
-    # 3. Setup Particles
+    # 3. 设置粒子系统
     container, mesh = setup_particles()
     
-    # 4. Render Settings
+    # 4. 渲染设置
     scene = bpy.context.scene
     scene.render.engine = RENDER_ENGINE
     scene.cycles.samples = SAMPLES
@@ -395,10 +351,10 @@ def main(should_render=None):
         
     all_data = []
     
-    # --- Phase 1: Background Frames (Frame -1) ---
-    print("Processing Background Frames (-1)...")
-    container.hide_render = True # Hide object
-    # Disable Geometry Nodes modifier to prevent crash on empty mesh
+    # --- 第一阶段: 背景帧 (Frame -1) ---
+    print("正在处理背景帧 (-1)...")
+    container.hide_render = True # 隐藏物体
+    # 禁用 Geometry Nodes 修改器以防止空网格崩溃
     container.modifiers["Meshing"].show_render = False
     container.modifiers["Meshing"].show_viewport = False
     
@@ -421,20 +377,20 @@ def main(should_render=None):
             "intrinsic": intrinsic
         })
         
-    container.hide_render = False # Show object
-    # Re-enable Geometry Nodes modifier
+    container.hide_render = False # 显示物体
+    # 重新启用 Geometry Nodes 修改器
     container.modifiers["Meshing"].show_render = True
     container.modifiers["Meshing"].show_viewport = True
     
-    # --- Phase 2: Simulation Frames (0..13) ---
-    print("Processing Simulation Frames...")
+    # --- 第二阶段: 模拟帧 (0..13) ---
+    print("正在处理模拟帧...")
     for frame in range(start_frame, end_frame + 1):
-        print(f"Frame {frame} setup...")
+        print(f"设置帧 {frame}...")
         
-        # 1. Update mesh data first
+        # 1. 先更新网格数据
         update_mesh_for_frame(container, frame) 
         
-        # 2. Set frame (triggers modifiers)
+        # 2. 设置帧号 (触发修改器)
         scene.frame_set(frame) 
         
         time = frame / fps
@@ -457,15 +413,15 @@ def main(should_render=None):
                 "intrinsic": intrinsic
             })
 
-    # Save Metadata
+    # 保存元数据
     json_path = os.path.join(os.path.dirname(OUTPUT_DIR), "all_data.json")
     with open(json_path, "w") as f:
         json.dump(all_data, f, indent=4)
         
-    print(f"Setup complete. Metadata saved to {json_path}.")
+    print(f"设置完成. 元数据已保存至 {json_path}.")
     if not should_render:
-        print("Note: Rendering was skipped. Use '--render' argument to enable rendering.")
+        print("注意: 渲染已跳过. 使用 '--render' 参数或在脚本中设置 should_render=True 以启用渲染.")
 
 if __name__ == "__main__":
-    # Set should_render=True to enable rendering, False to skip
+    # 设置 should_render=True 启用渲染, False 跳过
     main(should_render=True)
