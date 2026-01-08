@@ -7,13 +7,19 @@ import json
 from mathutils import Vector
 # -- Blender 粒子转网格处理示例脚本
 # --- 配置 ---
-# 如果扩展此脚本，可以更改这些设置或通过命令行传递
-INPUT_DIR = os.path.abspath("D:/Experiments/gic/taichi_dataset/output_npy/output_elasticity")
-OUTPUT_DIR = os.path.abspath("D:/Experiments/gic/taichi_dataset/render_output/elasticity")
-MATERIAL_TYPE = "toothpaste_custom" # 可选: water, sand, elastic, plasticine, toothpaste, cream
+# 基础路径
+BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+
+# 预设5种材质名称 (修改这里选择当前渲染的材质)
+MATERIAL_TYPE = "sand"  # 可选: water, sand, elastic, plasticine, non_newtonian
+
+# 根据材质名称自动生成输入输出路径
+INPUT_DIR = os.path.abspath(f"{BASE_DIR}/output_npy/output_{MATERIAL_TYPE}")
+OUTPUT_DIR = os.path.abspath(f"{BASE_DIR}/render_output/{MATERIAL_TYPE}")
 
 # 粒子设置
 PARTICLE_RADIUS = 0.008
+SAND_GRAIN_RADIUS = 0.0008  # 沙子颗粒半径 (比流体粒子小)
 RESOLUTION_PERCENT = 100
 RENDER_ENGINE = 'CYCLES' # 'CYCLES' 或 'BLENDER_EEVEE'
 SAMPLES = 128
@@ -29,6 +35,10 @@ MATERIALS = {
     "cream": {"color": (1.0, 0.98, 0.9, 1), "roughness": 0.4, "transmission": 0.0, "subsurface": 0.8},
     "non_newtonian": {"color": (1.0, 0.9, 0.8, 1), "roughness": 0.4, "transmission": 0.0, "subsurface": 0.2},
 }
+
+# 判断是否为沙子材质 (需要特殊处理)
+def is_sand_material():
+    return MATERIAL_TYPE == "sand"
 
 def clean_scene():
     # 选中所有物体
@@ -205,7 +215,8 @@ def create_material(mat_type):
 
     return mat
 
-def setup_particles():
+def setup_particles_fluid():
+    """流体类材质的粒子系统设置 (Points -> Volume -> Mesh)"""
     # 1. 创建容器网格 (仅顶点)
     mesh = bpy.data.meshes.new("ParticleContainer")
     container = bpy.data.objects.new("ParticleContainer", mesh)
@@ -222,7 +233,6 @@ def setup_particles():
     node_group.nodes.clear()
     
     # 创建节点
-    # 输入 Input
     input_node = node_group.nodes.new('NodeGroupInput')
     input_node.location = (-400, 0)
     node_group.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
@@ -240,7 +250,7 @@ def setup_particles():
     v2m_node.inputs['Threshold'].default_value = 0.3
     v2m_node.inputs['Adaptivity'].default_value = 0.0
     
-    # --- 平滑处理 (Laplacian Smooth via Blur Attribute) ---
+    # 平滑处理
     # Set Position
     set_pos_node = node_group.nodes.new('GeometryNodeSetPosition')
     set_pos_node.location = (200, 0)
@@ -275,22 +285,111 @@ def setup_particles():
     output_node.location = (1000, 0)
     node_group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
     
-    # Links
+    # 连接节点
     links = node_group.links
     links.new(input_node.outputs[0], p2v_node.inputs['Points'])
     links.new(p2v_node.outputs[0], v2m_node.inputs['Volume'])
-    
-    # Smoothing links
     links.new(v2m_node.outputs[0], set_pos_node.inputs['Geometry'])
     links.new(pos_input_node.outputs['Position'], blur_node.inputs['Value'])
     links.new(blur_node.outputs['Value'], set_pos_node.inputs['Position'])
-    
     links.new(set_pos_node.outputs[0], smooth_node.inputs['Geometry'])
     links.new(smooth_node.outputs[0], subdiv_node.inputs['Mesh'])
     links.new(subdiv_node.outputs[0], mat_node.inputs['Geometry'])
     links.new(mat_node.outputs[0], output_node.inputs[0])
     
     return container, mesh
+
+def setup_particles_sand():
+    """沙子材质的粒子系统设置 (Points -> Instance Spheres) 保持颗粒感"""
+    # 1. 创建容器网格 (仅顶点)
+    mesh = bpy.data.meshes.new("ParticleContainer")
+    container = bpy.data.objects.new("ParticleContainer", mesh)
+    bpy.context.collection.objects.link(container)
+    
+    # 2. 添加 Geometry Nodes 修改器
+    mod = container.modifiers.new(name="Meshing", type='NODES')
+    node_group = mod.node_group
+    if not node_group:
+        node_group = bpy.data.node_groups.new(name="SandGroup", type='GeometryNodeTree')
+        mod.node_group = node_group
+        
+    node_group.nodes.clear()
+    
+    # 输入
+    input_node = node_group.nodes.new('NodeGroupInput')
+    input_node.location = (-600, 0)
+    node_group.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+    
+    # Mesh to Points (将顶点转换为点云)
+    m2p_node = node_group.nodes.new('GeometryNodeMeshToPoints')
+    m2p_node.location = (-400, 0)
+    
+    # 创建 UV Sphere 作为沙粒实例
+    uv_sphere_node = node_group.nodes.new('GeometryNodeMeshUVSphere')
+    uv_sphere_node.location = (-400, -200)
+    uv_sphere_node.inputs['Segments'].default_value = 8  # 低多边形以提高性能
+    uv_sphere_node.inputs['Rings'].default_value = 6
+    uv_sphere_node.inputs['Radius'].default_value = SAND_GRAIN_RADIUS
+    
+    # Instance on Points (在每个点上实例化球体)
+    instance_node = node_group.nodes.new('GeometryNodeInstanceOnPoints')
+    instance_node.location = (-100, 0)
+    
+    # 随机缩放 (让沙粒大小有变化)
+    random_node = node_group.nodes.new('FunctionNodeRandomValue')
+    random_node.location = (-300, -350)
+    random_node.data_type = 'FLOAT_VECTOR'
+    random_node.inputs[0].default_value = (0.7, 0.7, 0.7)  # 最小缩放
+    random_node.inputs[1].default_value = (1.3, 1.3, 1.3)  # 最大缩放
+    
+    # 随机旋转 (让沙粒朝向有变化)
+    random_rot_node = node_group.nodes.new('FunctionNodeRandomValue')
+    random_rot_node.location = (-300, -500)
+    random_rot_node.data_type = 'FLOAT_VECTOR'
+    random_rot_node.inputs[0].default_value = (0, 0, 0)
+    random_rot_node.inputs[1].default_value = (6.28, 6.28, 6.28)  # 0-2π
+    
+    # Realize Instances (将实例转换为真实几何体)
+    realize_node = node_group.nodes.new('GeometryNodeRealizeInstances')
+    realize_node.location = (150, 0)
+    
+    # 设置平滑着色
+    smooth_node = node_group.nodes.new('GeometryNodeSetShadeSmooth')
+    smooth_node.location = (350, 0)
+    
+    # 设置材质
+    mat_node = node_group.nodes.new('GeometryNodeSetMaterial')
+    mat_node.location = (550, 0)
+    mat = create_material(MATERIAL_TYPE)
+    mat_node.inputs['Material'].default_value = mat
+    
+    # 输出
+    output_node = node_group.nodes.new('NodeGroupOutput')
+    output_node.location = (750, 0)
+    node_group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    
+    # 连接节点
+    links = node_group.links
+    links.new(input_node.outputs[0], m2p_node.inputs['Mesh'])
+    links.new(m2p_node.outputs['Points'], instance_node.inputs['Points'])
+    links.new(uv_sphere_node.outputs['Mesh'], instance_node.inputs['Instance'])
+    links.new(random_node.outputs[1], instance_node.inputs['Scale'])  # Vector output
+    links.new(random_rot_node.outputs[1], instance_node.inputs['Rotation'])  # Vector as Euler
+    links.new(instance_node.outputs['Instances'], realize_node.inputs['Geometry'])
+    links.new(realize_node.outputs['Geometry'], smooth_node.inputs['Geometry'])
+    links.new(smooth_node.outputs['Geometry'], mat_node.inputs['Geometry'])
+    links.new(mat_node.outputs['Geometry'], output_node.inputs[0])
+    
+    return container, mesh
+
+def setup_particles():
+    """根据材质类型选择合适的粒子系统设置"""
+    if is_sand_material():
+        print("使用沙子渲染模式 (颗粒实例化)")
+        return setup_particles_sand()
+    else:
+        print("使用流体渲染模式 (体积网格化)")
+        return setup_particles_fluid()
 
 def load_frame_data(frame_idx):
     if frame_idx < 0: return None
@@ -371,7 +470,7 @@ def main(should_render=None):
         intrinsic = get_intrinsic(cam)
         
         all_data.append({
-            "file_path": f"./render_output/{filename}",
+            "file_path": f"./{MATERIAL_TYPE}/{filename}",
             "time": time,
             "c2w": c2w,
             "intrinsic": intrinsic
@@ -407,14 +506,14 @@ def main(should_render=None):
             intrinsic = get_intrinsic(cam)
             
             all_data.append({
-                "file_path": f"./render_output/{filename}",
+                "file_path": f"./{MATERIAL_TYPE}/{filename}",
                 "time": time,
                 "c2w": c2w,
                 "intrinsic": intrinsic
             })
 
-    # 保存元数据
-    json_path = os.path.join(os.path.dirname(OUTPUT_DIR), "all_data.json")
+    # 保存元数据 (保存到材质对应的输出目录)
+    json_path = os.path.join(OUTPUT_DIR, "all_data.json")
     with open(json_path, "w") as f:
         json.dump(all_data, f, indent=4)
         
