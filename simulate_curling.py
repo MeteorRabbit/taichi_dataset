@@ -1,3 +1,5 @@
+# 保龄球简单模拟
+
 import taichi as ti
 import numpy as np
 import math
@@ -338,9 +340,46 @@ def load_mesh_particles(filename, dx, scale=1.0, offset=[0.5, 0.5, 0.5], jitter_
     print(f"Generated {len(points)} particles from mesh (jitter_ratio={jitter_ratio}).")
     return points
 
+def generate_cylinder_particles(center, radius, height, dx):
+    # center is [x, y, z] of the geometric center
+    points = []
+    
+    # Bounding box ranges
+    min_x = center[0] - radius
+    max_x = center[0] + radius
+    min_z = center[2] - radius
+    max_z = center[2] + radius
+    min_y = center[1] - height / 2.0
+    max_y = center[1] + height / 2.0
+    
+    # Grid sampling
+    x_range = np.arange(min_x, max_x, dx)
+    y_range = np.arange(min_y, max_y, dx)
+    z_range = np.arange(min_z, max_z, dx)
+    
+    # Create meshgrid for vectorized operation
+    xx, yy, zz = np.meshgrid(x_range, y_range, z_range, indexing='ij')
+    
+    # Flatten
+    xx = xx.flatten()
+    yy = yy.flatten()
+    zz = zz.flatten()
+    
+    # Filter
+    dist_sq = (xx - center[0])**2 + (zz - center[2])**2
+    mask = (dist_sq <= radius**2) & (yy >= min_y) & (yy <= max_y)
+    
+    points = np.vstack((xx[mask], yy[mask], zz[mask])).T
+    
+    # Jitter
+    jitter = (np.random.rand(*points.shape) - 0.5) * dx * 0.4
+    points += jitter
+    
+    return points.astype(np.float32)
+
 # --- Simulation Setup ---
 
-def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_newtonian'):
+def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elasticity'):
     # Parameters
     dtype = ti.f32
     dt = 1e-4
@@ -432,20 +471,27 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
 
     
     # Initialization
-    ply_path = "/root/workspace/taichi/toyduck.ply" # Set this to your PLY file path, e.g., "/path/to/model.ply"
-    # ply_path = "/root/workspace/example.ply" # Example
+    # Curling Setup
+    radius = 0.1
+    height = 0.05
+    target_distance = 0.5
     
-    init_pos = None
-    if ply_path and os.path.exists(ply_path):
-        # Load particles from mesh
-        # Use a slightly smaller spacing for packing if desired, or just dx
-        # offset=[x, y, z] controls the initial position. y is the height.
-        init_pos = load_mesh_particles(ply_path, dx=dx*0.15, scale=1.0, offset=[0.0, 0.1, 0.0], jitter_ratio=0.7)
-        n_particles_est = len(init_pos)
-        print(f"Initializing with {n_particles_est} particles from {ply_path}")
-    else:
-        n_particles_est = 10000
-        print(f"Initializing with {n_particles_est} particles (Cube)")
+    # Cylinder 1 (Thrower)
+    c1_pos = [0.3, height/2 + dx, 0.5]
+    c1_vel = [1.5, 0.0, 0.0] 
+    p1 = generate_cylinder_particles(c1_pos, radius, height, dx/2)
+    v1 = np.full(p1.shape, c1_vel, dtype=np.float32)
+    
+    # Cylinder 2 (Target)
+    c2_pos = [0.3 + target_distance, height/2 + dx, 0.5] 
+    c2_vel = [0.0, 0.0, 0.0]
+    p2 = generate_cylinder_particles(c2_pos, radius, height, dx/2)
+    v2 = np.full(p2.shape, c2_vel, dtype=np.float32)
+
+    init_pos = np.vstack((p1, p2))
+    init_vel = np.vstack((v1, v2))
+    n_particles_est = len(init_pos)
+    print(f"Initializing Curling Scenario with {n_particles_est} particles")
     
     # Fields
     num_particles = ti.field(ti.i32, shape=())
@@ -476,47 +522,27 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     
     # Initialize particles
     @ti.kernel
-    def init_particles_cube(n: int, center: ti.template(), size: float):
-        num_particles[None] = n
-        for i in range(n):
-            # Random position in a cube
-            for d in ti.static(range(3)):
-                sim.x[i, 0][d] = center[None][d] + (ti.random() - 0.5) * size
-            
-            sim.v[i, 0] = ti.Vector([0.0, 0.0, 0.0])
-            sim.F[i, 0] = ti.Matrix.identity(dtype, 3)
-            sim.C[i, 0] = ti.Matrix.zero(dtype, 3, 3)
-            sim.p_mass[i] = sim.p_vol[None] * rho
-            sim.mu[i] = mu
-            sim.lam[i] = lam
-
-    @ti.kernel
-    def init_particles_from_field(n: int, pos_field: ti.template()):
+    def init_particles_with_vel(n: int, pos_field: ti.template(), vel_field: ti.template()):
         num_particles[None] = n
         for i in range(n):
             sim.x[i, 0] = pos_field[i]
+            sim.v[i, 0] = vel_field[i]
             
-            sim.v[i, 0] = ti.Vector([0.0, 0.0, 0.0])
             sim.F[i, 0] = ti.Matrix.identity(dtype, 3)
             sim.C[i, 0] = ti.Matrix.zero(dtype, 3, 3)
             sim.p_mass[i] = sim.p_vol[None] * rho
             sim.mu[i] = mu
             sim.lam[i] = lam
 
-    if init_pos is not None:
-        # Create a temporary field to hold positions for initialization
-        pos_field = ti.Vector.field(3, dtype=dtype, shape=n_particles_est)
-        pos_field.from_numpy(init_pos)
-        init_particles_from_field(n_particles_est, pos_field)
-    else:
-        center = ti.Vector.field(3, dtype=dtype, shape=())
-        center[None] = [0.5, 0.5, 0.5]
-        init_particles_cube(n_particles_est, center, 0.2)
+    pos_field = ti.Vector.field(3, dtype=dtype, shape=n_particles_est)
+    vel_field = ti.Vector.field(3, dtype=dtype, shape=n_particles_est)
+    pos_field.from_numpy(init_pos)
+    vel_field.from_numpy(init_vel)
     
-    # Add boundary (Floor)
-    # PAC-NeRF uses surface_sticky for the ground, which prevents sliding (infinite friction).
-    # If you want it to be slippery, use surface_slip.
-    sim.add_surface_collider(point=[0, 0.0, 0], normal=[0, 1, 0], surface=MPMSimulator.surface_sticky)
+    init_particles_with_vel(n_particles_est, pos_field, vel_field)
+    
+    # Add boundary (Floor) - Ice (Slip)
+    sim.add_surface_collider(point=[0, 0.0, 0], normal=[0, 1, 0], surface=MPMSimulator.surface_slip)
 
     # Run loop
     # output_dir is passed as argument
@@ -527,7 +553,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     xyz_min = initial_pos_np.min(axis=0).tolist()
     xyz_max = initial_pos_np.max(axis=0).tolist()
     
-    simulation_frames = 14
+    simulation_frames = 30
     gravity_vec = [0, -9.8, 0]
     
     # Boundary condition: [point, normal, type(0=sticky)]
@@ -562,7 +588,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/output_sim", help="Output directory for simulation results")
-    parser.add_argument('-m', '--material', type=str, default="non_newtonian", 
+    parser.add_argument('-m', '--material', type=str, default="elasticity", 
                         choices=['elasticity', 'plasticine', 'sand', 'newtonian', 'non_newtonian', 'toothpaste_custom'],
                         help="Material type for simulation")
     args = parser.parse_args()

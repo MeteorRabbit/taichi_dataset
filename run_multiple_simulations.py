@@ -10,7 +10,7 @@ def main():
     base_output_dir = os.path.join(os.path.dirname(__file__), 'output_npy')
     os.makedirs(base_output_dir, exist_ok=True)
     
-    script_path = os.path.join(os.path.dirname(__file__), 'simulate_new_test.py')
+    script_path = os.path.join(os.path.dirname(__file__), 'simulate_solid_ground.py')
 
     # Run simulation for each material
     for material in materials:
