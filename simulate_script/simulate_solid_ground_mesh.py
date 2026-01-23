@@ -436,7 +436,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
 
     
     # Initialization
-    ply_path = "/root/workspace/taichi_dataset/toyduck.ply" 
+    ply_path = "/root/workspace/taichi_dataset/meshes/toyduck.ply" 
     # ply_path = "/root/workspace/example.ply" # Example
     
     init_pos = None

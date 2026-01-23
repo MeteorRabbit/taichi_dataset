@@ -5,13 +5,13 @@ import sys
 
 # --- 配置 ---
 # 基础路径：使用当前脚本所在目录
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = "/root/workspace/taichi_dataset"
 
 # 材质名称 (决定加载哪个文件夹的数据) - 此时不再作为路径的一部分
 MATERIAL_TYPE = "simulation" 
 
 # 输入路径
-INPUT_DIR = os.path.join(BASE_DIR, "output_sim_multi")
+INPUT_DIR = os.path.join(BASE_DIR, "particles_output/output_sim_multi")
 
 def clean_scene():
     """清理场景中的所有物体，保留基本环境"""

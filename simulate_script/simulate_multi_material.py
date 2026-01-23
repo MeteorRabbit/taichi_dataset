@@ -458,7 +458,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     print(f"Ground Material: Sand (Deep)")
     
     # Initialization Paths
-    ply_path = "/root/workspace/taichi/toyduck.ply" 
+    ply_path = "/root/workspace/taichi_dataset/assets/meshes/toyduck.ply" 
     
     init_pos_obj = None
     if ply_path and os.path.exists(ply_path):
