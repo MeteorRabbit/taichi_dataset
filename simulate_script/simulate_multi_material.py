@@ -327,6 +327,40 @@ class MPMSimulator:
 
         self.analytic_collision.append(get_velocity)
 
+def load_mesh_vertices_and_faces(filename, scale=1.0, offset=[0.5, 0.5, 0.5]):
+    print(f"Loading mesh from {filename}...")
+    mesh = trimesh.load(filename)
+    
+    # Handle Scene object if returned
+    if isinstance(mesh, trimesh.Scene):
+        if len(mesh.geometry) == 0:
+            raise ValueError("Scene is empty")
+        print("Scene loaded, using first geometry.")
+        mesh = list(mesh.geometry.values())[0]
+
+    # Rotate 90 degrees around X axis (to convert Z-up to Y-up)
+    rot_matrix = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
+    mesh.apply_transform(rot_matrix)
+    
+    if scale != 1.0:
+        mesh.apply_scale(scale)
+    
+    vertices = mesh.vertices.astype(np.float32)
+    faces = mesh.faces
+    
+    # --- Auto Centering ---
+    # Calculate current centroid
+    centroid = (vertices.min(axis=0) + vertices.max(axis=0)) / 2.0
+    # Shift vertices to center around (0,0,0)
+    vertices -= centroid
+    print(f"Mesh centered. Shifted by {-centroid}")
+    
+    # Apply offset
+    vertices += np.array(offset, dtype=np.float32)
+    
+    print(f"Loaded {len(vertices)} vertices and {len(faces)} faces.")
+    return vertices, faces
+
 def load_mesh_particles(filename, dx, scale=1.0, offset=[0.5, 0.5, 0.5], jitter_ratio=0.4):
     print(f"Loading mesh from {filename}...")
     mesh = trimesh.load(filename)
@@ -373,7 +407,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
         cuda_chunk_size = 32
         print(f"Running on CPU: Adjusted dx to {dx} to prevent OOM/Timeouts.")
     else:
-        dx = 0.01 # High resolution for GPU
+        dx = 0.02 # High resolution for GPU (Adjusted to preventing OOM)
         particle_chunk_size = 2**14
         cuda_chunk_size = 64
         
@@ -395,7 +429,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
         
         if m_type == 'elasticity':
             m_id = MPMSimulator.elasticity
-            rho = 1000.0
+            rho = 2000.0 # Increased density (was 1000) to make it heavier for better impact
             E = 3e5
             nu = 0.25
             mu = E / (2 * (1 + nu))
@@ -414,11 +448,11 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
             m_id = MPMSimulator.drucker_prager
             rho = 1800.0
             # Adjusted for softer sand: Lower E and friction_angle
-            E = 1e6   # Was 1e6
+            E = 2e5   # Lowered from 1e6 to make sand softer and more splashy
             nu = 0.3
             mu = E / (2 * (1 + nu))
             lam = E * nu / ((1 + nu) * (1 - 2 * nu))
-            friction_angle = 10.0 # Was 30.0
+            friction_angle = 10.0 
             sin_phi = math.sin(math.radians(friction_angle))
             fric = math.sqrt(2.0 / 3.0) * 2.0 * sin_phi / (3.0 - sin_phi)
 
@@ -458,18 +492,35 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     print(f"Ground Material: Sand (Deep)")
     
     # Initialization Paths
-    ply_path = "/root/workspace/taichi_dataset/assets/meshes/toyduck.ply" 
+    ply_path = "/root/workspace/taichi_dataset/meshes/toyduck.ply" 
     
     init_pos_obj = None
+    obj_faces = None
+
     if ply_path and os.path.exists(ply_path):
-        # Load particles from mesh
-        # Use a slightly smaller spacing for packing if desired, or just dx
-        # Suggestion: Don't use too small factor (like 0.15) if voxelization is too slow. 
-        # 0.5 means 2x2x2=8 particles per grid cell.
-        sampling_dx_factor = 0.5 
-        print(f"Using sampling dx: {dx * sampling_dx_factor} (factor={sampling_dx_factor}) for voxelization.")
-        init_pos_obj = load_mesh_particles(ply_path, dx=dx*sampling_dx_factor, scale=1.0, offset=[0.0, 0.1, 0.0], jitter_ratio=0.7)
-        print(f"Object particles: {len(init_pos_obj)}")
+        # Load mesh vertices directly
+        # First load without offset to calculate size
+        temp_verts, obj_faces = load_mesh_vertices_and_faces(ply_path, scale=1.0, offset=[0.0, 0.0, 0.0])
+        
+        # Calculate bounds
+        min_b = temp_verts.min(axis=0)
+        max_b = temp_verts.max(axis=0)
+        size = max_b - min_b
+        print(f"Original Object Size: {size}")
+        
+        # Target max size (Container is 0.6 wide, let's keep object under 0.25 to be safe)
+        target_size = 0.25
+        max_dim = size.max()
+        scale_factor = 1.0
+        if max_dim > target_size:
+            scale_factor = target_size / max_dim
+            print(f"Object too large. Auto-scaling by {scale_factor:.4f}")
+        
+        # Reload with correct scale and offset
+        # Offset y to 0.3 (sand surface is 0.0, sand bottom is -0.2)
+        # 0.3 is a higher drop height for better splash
+        init_pos_obj, obj_faces = load_mesh_vertices_and_faces(ply_path, scale=scale_factor, offset=[0.0, 0.3, 0.0])
+        print(f"Object particles (vertices): {len(init_pos_obj)}")
     else:
         # Fallback cube
         print("Ply file not found, using random cube for object")
@@ -477,26 +528,36 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
         init_pos_obj = np.random.rand(10000, 3).astype(np.float32) * 0.2 + np.array([-0.1, 0.4, -0.1])
 
     # Generate Ground Particles
-    # Box from [-0.6, -0.2, -0.6] to [0.6, 0.0, 0.6]
-    # Spacing adjustments
+    # Box from [-0.3, -0.2, -0.3] to [0.3, 0.0, 0.3] (Shrunk to 1/2)
     print("Generating ground particles...")
-    g_min = np.array([-0.6, -0.2, -0.6])
-    g_max = np.array([0.6, 0.0, 0.6])
+    g_min = np.array([-0.3, -0.2, -0.3])
+    g_max = np.array([0.3, 0.0, 0.3])
     
-    # 0.5 * dx results in 8 particles per cell - too heavy for CPU
-    # 0.8 * dx results in ~2 particles per cell
-    ground_sampling_factor = 0.8 if is_cpu else 0.5 
-    g_step = dx * ground_sampling_factor
+    # Target: Higher density (*4), More random
+    # Previous: Box 1.2x1.2x0.2 = 0.288 m^3. Count ~290k.
+    # New: Box 0.6x0.6x0.2 = 0.072 m^3 (1/4 volume).
+    # Maintain ~300k particles in 1/4 volume => 4x Density.
+    target_ground_particles = 300000 
     
-    x_range = np.arange(g_min[0], g_max[0], g_step)
-    y_range = np.arange(g_min[1], g_max[1], g_step)
-    z_range = np.arange(g_min[2], g_max[2], g_step)
+    # Use Random Uniform Sampling to avoid regular grid patterns
+    init_pos_ground = np.random.uniform(low=g_min, high=g_max, size=(target_ground_particles, 3)).astype(np.float32)
+
+    # --- Density Correction ---
+    # Since we are over-sampling (packing more particles than the grid resolution 'dx' implies),
+    # we must reduce the mass per particle to maintain the correct physical density (rho).
+    # Default p_vol is (dx * 0.5)^3.
+    # Expected particles for this volume = Volume / p_vol
+    sand_volume = (g_max[0] - g_min[0]) * (g_max[1] - g_min[1]) * (g_max[2] - g_min[2])
+    p_vol_default = (dx * 0.5) ** 3
+    expected_particles = sand_volume / p_vol_default
+    density_scale = expected_particles / target_ground_particles
     
-    # Create meshgrid
-    gx, gy, gz = np.meshgrid(x_range, y_range, z_range, indexing='ij')
-    init_pos_ground = np.stack([gx.flatten(), gy.flatten(), gz.flatten()], axis=1).astype(np.float32)
-    # Add some jitter to ground too
-    init_pos_ground += (np.random.rand(*init_pos_ground.shape) - 0.5) * g_step * 0.5
+    print(f"Sand Density Correction: Scale Rho by {density_scale:.4f} (Count: {target_ground_particles} vs Expected: {int(expected_particles)})")
+    
+    # Adjust Ground Properties (rho is index 1)
+    g_props_list = list(g_props)
+    g_props_list[1] *= density_scale # Scale rho
+    g_props = tuple(g_props_list)
     
     print(f"Ground particles: {len(init_pos_ground)}")
     
@@ -558,17 +619,17 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     sim.add_surface_collider(point=[0, -0.2, 0], normal=[0, 1, 0], surface=MPMSimulator.surface_sticky)
 
     # Add walls ("Pool" boundary) to contain sand
-    # Sand range is x=[-0.6, 0.6], z=[-0.6, 0.6]
-    wall_padding = 0.0 # You can increase this slightly (e.g., 0.01) if initial particles are too close
+    # Sand range is x=[-0.3, 0.3], z=[-0.3, 0.3] (Shrunk to 1/2 size)
+    wall_padding = 0.0 
     
-    # Left Wall (x = -0.6)
-    sim.add_surface_collider(point=[-0.6 - wall_padding, 0, 0], normal=[1, 0, 0], surface=MPMSimulator.surface_slip)
-    # Right Wall (x = 0.6)
-    sim.add_surface_collider(point=[0.6 + wall_padding, 0, 0], normal=[-1, 0, 0], surface=MPMSimulator.surface_slip)
-    # Back Wall (z = -0.6)
-    sim.add_surface_collider(point=[0, 0, -0.6 - wall_padding], normal=[0, 0, 1], surface=MPMSimulator.surface_slip)
-    # Front Wall (z = 0.6)
-    sim.add_surface_collider(point=[0, 0, 0.6 + wall_padding], normal=[0, 0, -1], surface=MPMSimulator.surface_slip)
+    # Left Wall (x = -0.3)
+    sim.add_surface_collider(point=[-0.3 - wall_padding, 0, 0], normal=[1, 0, 0], surface=MPMSimulator.surface_slip)
+    # Right Wall (x = 0.3)
+    sim.add_surface_collider(point=[0.3 + wall_padding, 0, 0], normal=[-1, 0, 0], surface=MPMSimulator.surface_slip)
+    # Back Wall (z = -0.3)
+    sim.add_surface_collider(point=[0, 0, -0.3 - wall_padding], normal=[0, 0, 1], surface=MPMSimulator.surface_slip)
+    # Front Wall (z = 0.3)
+    sim.add_surface_collider(point=[0, 0, 0.3 + wall_padding], normal=[0, 0, -1], surface=MPMSimulator.surface_slip)
 
     # Run loop
     os.makedirs(output_dir, exist_ok=True)
@@ -583,10 +644,10 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     
     bc_data = {
         "ground": [[0.0, -0.2, 0.0], [0.0, 1.0, 0.0], 0],
-        "wall_left": [[-0.6, 0.0, 0.0], [1.0, 0.0, 0.0], 0],
-        "wall_right": [[0.6, 0.0, 0.0], [-1.0, 0.0, 0.0], 0],
-        "wall_back": [[0.0, 0.0, -0.6], [0.0, 0.0, 1.0], 0],
-        "wall_front": [[0.0, 0.0, 0.6], [0.0, 0.0, -1.0], 0]
+        "wall_left": [[-0.3, 0.0, 0.0], [1.0, 0.0, 0.0], 0],
+        "wall_right": [[0.3, 0.0, 0.0], [-1.0, 0.0, 0.0], 0],
+        "wall_back": [[0.0, 0.0, -0.3], [0.0, 0.0, 1.0], 0],
+        "wall_front": [[0.0, 0.0, 0.3], [0.0, 0.0, -1.0], 0]
     }
     
     metadata = {
@@ -605,16 +666,31 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     print(f"Saved simulation metadata to {json_output_path}")
 
     print(f"Starting simulation... Outputting to {output_dir}")
+    n_obj = len(init_pos_obj)
     for frame in range(simulation_frames): 
         sim.advance(frame)
         
         pos = sim.x.to_numpy()[:num_particles[None], 0, :] 
-        np.save(os.path.join(output_dir, f"frame_{frame:04d}.npy"), pos)
+        
+        # Split and save
+        pos_obj = pos[:n_obj]
+        pos_ground = pos[n_obj:]
+        
+        # Save Object as PLY mesh if faces exist, else NPY
+        if obj_faces is not None:
+             mesh = trimesh.Trimesh(vertices=pos_obj, faces=obj_faces)
+             mesh.export(os.path.join(output_dir, f"frame_{frame:04d}_obj.ply"))
+        else:
+             np.save(os.path.join(output_dir, f"frame_{frame:04d}_obj.npy"), pos_obj)
+
+        # Save Ground as NPY (Point Cloud)
+        np.save(os.path.join(output_dir, f"frame_{frame:04d}_ground.npy"), pos_ground)
+
         print(f"Frame {frame} completed. Particles: {num_particles[None]}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/output_sim_multi", help="Output directory for simulation results")
+    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/particles_output/multi_material", help="Output directory for simulation results")
     parser.add_argument('-m', '--material', type=str, default="elasticity", 
                         choices=['elasticity', 'plasticine', 'sand', 'newtonian', 'non_newtonian', 'toothpaste_custom'],
                         help="Material type for simulation")

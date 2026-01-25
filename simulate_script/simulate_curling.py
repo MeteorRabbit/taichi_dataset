@@ -482,11 +482,39 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     p1 = generate_cylinder_particles(c1_pos, radius, height, dx/2)
     v1 = np.full(p1.shape, c1_vel, dtype=np.float32)
     
-    # Cylinder 2 (Target)
-    c2_pos = [0.3 + target_distance, height/2 + dx, 0.5] 
-    c2_vel = [0.0, 0.0, 0.0]
-    p2 = generate_cylinder_particles(c2_pos, radius, height, dx/2)
-    v2 = np.full(p2.shape, c2_vel, dtype=np.float32)
+    # Cylinder 2 (Target) - 6 cylinders in triangle
+    # Offset Z slightly to avoid head-on collision (based on good effect feedback)
+    base_target_x = 0.3 + target_distance
+    base_target_z = 0.5 + 0.1
+    
+    target_positions = []
+    cyl_spacing = 2 * radius + 0.02 # Diameter + gap
+    row_dx = cyl_spacing * math.sqrt(3) / 2
+    row_dz = cyl_spacing / 2
+    
+    # Row 1 (1 cylinder)
+    target_positions.append([base_target_x, height/2 + dx, base_target_z])
+    
+    # Row 2 (2 cylinders)
+    target_positions.append([base_target_x + row_dx, height/2 + dx, base_target_z - row_dz])
+    target_positions.append([base_target_x + row_dx, height/2 + dx, base_target_z + row_dz])
+    
+    # Row 3 (3 cylinders)
+    target_positions.append([base_target_x + 2 * row_dx, height/2 + dx, base_target_z - cyl_spacing])
+    target_positions.append([base_target_x + 2 * row_dx, height/2 + dx, base_target_z])
+    target_positions.append([base_target_x + 2 * row_dx, height/2 + dx, base_target_z + cyl_spacing])
+    
+    target_particles_list = []
+    target_vel_list = []
+    
+    for pos in target_positions:
+        p = generate_cylinder_particles(pos, radius, height, dx/2)
+        v = np.full(p.shape, [0.0, 0.0, 0.0], dtype=np.float32)
+        target_particles_list.append(p)
+        target_vel_list.append(v)
+
+    p2 = np.vstack(target_particles_list)
+    v2 = np.vstack(target_vel_list)
 
     init_pos = np.vstack((p1, p2))
     init_vel = np.vstack((v1, v2))
@@ -573,23 +601,3 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     json_output_path = os.path.join(output_dir, "metadata.json")
     with open(json_output_path, "w") as f:
-        json.dump(metadata, f, indent=4)
-    print(f"Saved simulation metadata to {json_output_path}")
-
-    print(f"Starting simulation... Outputting to {output_dir}")
-    for frame in range(simulation_frames): # Run for frames
-        sim.advance(frame)
-        
-        # Export positions
-        pos = sim.x.to_numpy()[:num_particles[None], 0, :] # Get current positions
-        np.save(os.path.join(output_dir, f"frame_{frame:04d}.npy"), pos)
-        print(f"Frame {frame} completed. Particles: {num_particles[None]}")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/output_sim", help="Output directory for simulation results")
-    parser.add_argument('-m', '--material', type=str, default="elasticity", 
-                        choices=['elasticity', 'plasticine', 'sand', 'newtonian', 'non_newtonian', 'toothpaste_custom'],
-                        help="Material type for simulation")
-    args = parser.parse_args()
-    run_simulation(args.output_dir, args.material)
