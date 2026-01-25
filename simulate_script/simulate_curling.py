@@ -601,3 +601,23 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     json_output_path = os.path.join(output_dir, "metadata.json")
     with open(json_output_path, "w") as f:
+        json.dump(metadata, f, indent=4)
+    print(f"Saved simulation metadata to {json_output_path}")
+
+    print(f"Starting simulation... Outputting to {output_dir}")
+    for frame in range(simulation_frames): # Run for frames
+        sim.advance(frame)
+        
+        # Export positions
+        pos = sim.x.to_numpy()[:num_particles[None], 0, :] # Get current positions
+        np.save(os.path.join(output_dir, f"frame_{frame:04d}.npy"), pos)
+        print(f"Frame {frame} completed. Particles: {num_particles[None]}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/particles_output/output_curling", help="Output directory for simulation results")
+    parser.add_argument('-m', '--material', type=str, default="elasticity", 
+                        choices=['elasticity', 'plasticine', 'sand', 'newtonian', 'non_newtonian', 'toothpaste_custom'],
+                        help="Material type for simulation")
+    args = parser.parse_args()
+    run_simulation(args.output_dir, args.material)
