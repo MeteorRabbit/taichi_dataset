@@ -545,7 +545,7 @@ def run_simulation(output_dir="workspace/taichi_dataset/output_domino", material
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # Default to elasticity as requested
-    parser.add_argument('-o', '--output_dir', type=str, default="/root/workspace/taichi_dataset/output_domino", help="Output directory")
+    parser.add_argument('-o', '--output_dir', type=str, default="/root/workspace/taichi_dataset/particles_output/output_domino", help="Output directory")
     parser.add_argument('-m', '--material', type=str, default="elasticity", help="Material type")
     args = parser.parse_args()
     run_simulation(args.output_dir, args.material)

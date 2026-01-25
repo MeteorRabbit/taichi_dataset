@@ -404,7 +404,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
         # PAC-NeRF Elasticity (Jelly)
         material = MPMSimulator.elasticity
         rho = 1000.0
-        E = 3e5 # 316228
+        E = 5e6 # 316228
         nu = 0.25
         mu = E / (2 * (1 + nu))
         lam = E * nu / ((1 + nu) * (1 - 2 * nu))
@@ -478,7 +478,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     # Cylinder 1 (Thrower)
     c1_pos = [0.3, height/2 + dx, 0.5]
-    c1_vel = [1.5, 0.0, 0.0] 
+    c1_vel = [7.5, 0.0, 0.0] 
     p1 = generate_cylinder_particles(c1_pos, radius, height, dx/2)
     v1 = np.full(p1.shape, c1_vel, dtype=np.float32)
     
@@ -586,7 +586,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     # Boundary condition: [point, normal, type(0=sticky)]
     bc_data = {
-        "ground": [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0]
+        "ground": [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 1]
     }
     
     metadata = {

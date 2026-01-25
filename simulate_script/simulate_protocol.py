@@ -564,7 +564,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/output_sim", help="Output directory for simulation results")
+    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/particles_output/output_sim", help="Output directory for simulation results")
     parser.add_argument('-m', '--material', type=str, default="non_newtonian", 
                         choices=['elasticity', 'plasticine', 'sand', 'newtonian', 'non_newtonian', 'toothpaste_custom'],
                         help="Material type for simulation")
