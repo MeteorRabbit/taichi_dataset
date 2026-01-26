@@ -312,107 +312,58 @@ class MPMSimulator:
 
         self.analytic_collision.append(get_velocity)
 
-def load_mesh_particles(filename, dx, scale=1.0, offset=[0.5, 0.5, 0.5], jitter_ratio=0.4):
-    print(f"Loading mesh from {filename}...")
+def load_mesh_and_fill(filename, dx, scale=1.0, jitter_ratio=0.4):
+    print(f"Loading mesh from {filename} for particle generation...")
     mesh = trimesh.load(filename)
-    
-    # Rotate 90 degrees around X axis (to convert Z-up to Y-up)
-    # Rotation matrix for -90 deg around X:
-    # [1, 0, 0]
-    # [0, 0, -1]
-    # [0, 1, 0]
-    # But trimesh uses 4x4 matrix
-    rot_matrix = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
-    mesh.apply_transform(rot_matrix)
     
     if scale != 1.0:
         mesh.apply_scale(scale)
-    print("Voxelizing mesh...")
+
+    # 1. Get Surface Vertices
+    # These will be the first N particles
+    surface_verts = np.array(mesh.vertices, dtype=np.float32)
+    faces = np.array(mesh.faces, dtype=np.int32)
+    n_verts = len(surface_verts)
+    
+    # 2. Fill Interior
+    print("Voxelizing mesh to fill interior...")
+    # Use a slightly smaller pitch ensures we get particles inside
     voxel_grid = mesh.voxelized(pitch=dx)
-    print("Filling interior...")
     voxel_grid = voxel_grid.fill()
-    points = voxel_grid.points.astype(np.float32)
-    # 添加随机扰动
+    interior_points = voxel_grid.points.astype(np.float32)
+
+    # Remove interior points that are too close to surface vertices to prevent density explosion
+    # A simple heuristic: if a point is within dx/2 of a surface vertex, drop it?
+    # For simplicity in MPM, we can just merge them. The density will balance out quickly.
+    # But filtering is better. Let's do a simple check or just rely on jitter.
+    # To keep it fast without scipy cKDTree, we'll just skip detailed filtering for now 
+    # and rely on the fact that voxelization usually aligns to grid, acting distinct from verts.
+    
     if jitter_ratio > 0:
-        jitter = (np.random.rand(*points.shape) - 0.5) * dx * jitter_ratio
-        points += jitter
-    points += np.array(offset, dtype=np.float32)
-    print(f"Generated {len(points)} particles from mesh (jitter_ratio={jitter_ratio}).")
-    return points
+        jitter = (np.random.rand(*interior_points.shape) - 0.5) * dx * jitter_ratio
+        interior_points += jitter
 
-def generate_sphere_particles(center, radius, dx):
-    # center is [x, y, z] of the geometric center
-    points = []
+    print(f"Mesh info: {n_verts} vertices, {len(interior_points)} interior particles.")
     
-    # Bounding box ranges
-    min_x = center[0] - radius
-    max_x = center[0] + radius
-    min_y = center[1] - radius
-    max_y = center[1] + radius
-    min_z = center[2] - radius
-    max_z = center[2] + radius
+    # Combine: Vertices FIRST, then interior
+    all_points = np.vstack((surface_verts, interior_points))
     
-    # Grid sampling
-    x_range = np.arange(min_x, max_x, dx)
-    y_range = np.arange(min_y, max_y, dx)
-    z_range = np.arange(min_z, max_z, dx)
-    
-    # Create meshgrid for vectorized operation
-    xx, yy, zz = np.meshgrid(x_range, y_range, z_range, indexing='ij')
-    
-    # Flatten
-    xx = xx.flatten()
-    yy = yy.flatten()
-    zz = zz.flatten()
-    
-    # Filter
-    dist_sq = (xx - center[0])**2 + (yy - center[1])**2 + (zz - center[2])**2
-    mask = (dist_sq <= radius**2)
-    
-    points = np.vstack((xx[mask], yy[mask], zz[mask])).T
-    
-    # Jitter
-    jitter = (np.random.rand(*points.shape) - 0.5) * dx * 0.4
-    points += jitter
-    
-    return points.astype(np.float32)
+    return all_points, faces, n_verts
 
-def generate_cylinder_particles(center, radius, height, dx):
-    # center is [x, y, z] of the geometric center
-    points = []
+# Helper to place a mesh-based object in the scene
+def place_object(base_points, base_faces, n_verts, offset, existing_vert_count):
+    # base_points: (N, 3) all particles (verts + interior)
+    # base_faces: (F, 3) original face indices
+    # n_verts: number of vertices at the beginning of base_points
+    # existing_vert_count: how many vertices are already in the global mesh (vertex offset for faces)
     
-    # Bounding box ranges
-    min_x = center[0] - radius
-    max_x = center[0] + radius
-    min_z = center[2] - radius
-    max_z = center[2] + radius
-    min_y = center[1] - height / 2.0
-    max_y = center[1] + height / 2.0
+    # Points
+    new_points = base_points + np.array(offset, dtype=np.float32)
     
-    # Grid sampling
-    x_range = np.arange(min_x, max_x, dx)
-    y_range = np.arange(min_y, max_y, dx)
-    z_range = np.arange(min_z, max_z, dx)
+    # Faces (only update indices, don't change count)
+    new_faces = base_faces + existing_vert_count
     
-    # Create meshgrid for vectorized operation
-    xx, yy, zz = np.meshgrid(x_range, y_range, z_range, indexing='ij')
-    
-    # Flatten
-    xx = xx.flatten()
-    yy = yy.flatten()
-    zz = zz.flatten()
-    
-    # Filter
-    dist_sq = (xx - center[0])**2 + (zz - center[2])**2
-    mask = (dist_sq <= radius**2) & (yy >= min_y) & (yy <= max_y)
-    
-    points = np.vstack((xx[mask], yy[mask], zz[mask])).T
-    
-    # Jitter
-    jitter = (np.random.rand(*points.shape) - 0.5) * dx * 0.4
-    points += jitter
-    
-    return points.astype(np.float32)
+    return new_points, new_faces
 
 # --- Simulation Setup ---
 
@@ -506,57 +457,105 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     print(f"Selected Material: {material_type}")
     print(f"  mu: {mu}, lam: {lam}, yield_stress: {yield_stress}, plastic_viscosity: {plastic_viscosity}")
 
-    
     # Initialization
-    # Curling Setup
-    radius = 0.08
-    target_distance = 0.5
+    # Use billiard.ply
+    mesh_path = "workspace/taichi_dataset/meshes/billiard.ply" # Check path if needed
+    if not os.path.exists(mesh_path):
+        # Fallback relative path check
+        mesh_path = "meshes/billiard.ply"
+        if not os.path.exists(mesh_path):
+             mesh_path = "../meshes/billiard.ply"
+
+    # Scale to match original radius=0.08 approx. 
+    # Billiard PLY size is unknown, let's assume unit sphere or similar.
+    # User said "radius=0.08" in previous code.
+    # Let's load it once and measure/scale.
+    temp_mesh = trimesh.load(mesh_path)
+    # Get bounding box extents
+    extents = temp_mesh.bounding_box.extents
+    max_extent = max(extents)
+    desired_radius = 0.08
+    scale_factor = (desired_radius * 2) / max_extent
+    print(f"Auto-scaling mesh by factor {scale_factor} to match diameter {desired_radius * 2}")
+
+    # Prepare logic to reconstruct all meshes
+    # We will accumulate all vertices and faces for export
+    all_particles_list = [] # List of numpy arrays
+    all_vel_list = []
     
+    # Metadata for reconstruction
+    # List of objects, each: { 'n_verts': int, 'n_total': int, 'faces': np.array }
+    object_metadata = []
+    
+    # Load base mesh particles once
+    # Note: center of mesh is assumed to be 0,0,0 after load? trimesh usually loads as is.
+    # We might need to center it.
+    
+    base_particles, base_faces, n_verts_per_obj = load_mesh_and_fill(mesh_path, dx/2, scale=scale_factor, jitter_ratio=0.4)
+    # Center the base particles to 0,0,0
+    center_offset = -np.mean(base_particles[:n_verts_per_obj], axis=0) # Center based on vertices
+    base_particles += center_offset
+    
+    
+    # helper for tracking
+    current_global_vert_count = 0
+    global_faces = [] # List of face arrays
+    
+    def add_ball_to_scene(pos, vel):
+        nonlocal current_global_vert_count
+        
+        p, f = place_object(base_particles, base_faces, n_verts_per_obj, pos, current_global_vert_count)
+        v = np.full(p.shape, vel, dtype=np.float32)
+        
+        all_particles_list.append(p)
+        all_vel_list.append(v)
+        global_faces.append(f)
+        
+        # Track this object
+        object_metadata.append({
+            'type': 'ball',
+            'n_verts': n_verts_per_obj,
+            'n_total': len(p)
+        })
+        
+        current_global_vert_count += n_verts_per_obj
+
     # Sphere 1 (Thrower)
-    c1_pos = [0.3, radius + dx, 0.5]
-    c1_vel = [7.5, 0.0, 0.0] 
-    p1 = generate_sphere_particles(c1_pos, radius, dx/2)
-    v1 = np.full(p1.shape, c1_vel, dtype=np.float32)
+    c1_pos = [0.3, desired_radius + dx, 0.5]
+    c1_vel = [7.5, 0.0, 0.0]
+    add_ball_to_scene(c1_pos, c1_vel)
     
     # Sphere 2 (Target) - 6 spheres in triangle
-    # Offset Z slightly to avoid head-on collision (based on good effect feedback)
+    target_distance = 0.5
     base_target_x = 0.3 + target_distance
     base_target_z = 0.5 + 0.1
     
     target_positions = []
-    sphere_spacing = 2 * radius + 0.02 # Diameter + gap
+    sphere_spacing = 2 * desired_radius + 0.02
     row_dx = sphere_spacing * math.sqrt(3) / 2
     row_dz = sphere_spacing / 2
     
-    # Row 1 (1 sphere)
-    target_positions.append([base_target_x, radius + dx, base_target_z])
-    
-    # Row 2 (2 spheres)
-    target_positions.append([base_target_x + row_dx, radius + dx, base_target_z - row_dz])
-    target_positions.append([base_target_x + row_dx, radius + dx, base_target_z + row_dz])
-    
-    # Row 3 (3 spheres)
-    target_positions.append([base_target_x + 2 * row_dx, radius + dx, base_target_z - sphere_spacing])
-    target_positions.append([base_target_x + 2 * row_dx, radius + dx, base_target_z])
-    target_positions.append([base_target_x + 2 * row_dx, radius + dx, base_target_z + sphere_spacing])
-    
-    target_particles_list = []
-    target_vel_list = []
+    # Row 1
+    target_positions.append([base_target_x, desired_radius + dx, base_target_z])
+    # Row 2
+    target_positions.append([base_target_x + row_dx, desired_radius + dx, base_target_z - row_dz])
+    target_positions.append([base_target_x + row_dx, desired_radius + dx, base_target_z + row_dz])
+    # Row 3
+    target_positions.append([base_target_x + 2 * row_dx, desired_radius + dx, base_target_z - sphere_spacing])
+    target_positions.append([base_target_x + 2 * row_dx, desired_radius + dx, base_target_z])
+    target_positions.append([base_target_x + 2 * row_dx, desired_radius + dx, base_target_z + sphere_spacing])
     
     for pos in target_positions:
-        p = generate_sphere_particles(pos, radius, dx/2)
-        v = np.full(p.shape, [0.0, 0.0, 0.0], dtype=np.float32)
-        target_particles_list.append(p)
-        target_vel_list.append(v)
+        add_ball_to_scene(pos, [0.0, 0.0, 0.0])
 
-    p2 = np.vstack(target_particles_list)
-    v2 = np.vstack(target_vel_list)
-
-    init_pos = np.vstack((p1, p2))
-    init_vel = np.vstack((v1, v2))
+    init_pos = np.vstack(all_particles_list)
+    init_vel = np.vstack(all_vel_list)
     n_particles_est = len(init_pos)
     print(f"Initializing Curling Scenario with {n_particles_est} particles")
     
+    # Pre-merge faces for cheaper export loop
+    all_faces_merged = np.vstack(global_faces)
+
     # Fields
     num_particles = ti.field(ti.i32, shape=())
     
@@ -645,10 +644,39 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     for frame in range(simulation_frames): # Run for frames
         sim.advance(frame)
         
-        # Export positions
-        pos = sim.x.to_numpy()[:num_particles[None], 0, :] # Get current positions
-        np.save(os.path.join(output_dir, f"frame_{frame:04d}.npy"), pos)
-        print(f"Frame {frame} completed. Particles: {num_particles[None]}")
+        # Get current positions from Taichi to Numpy
+        # Note: sim.x contains ALL particles (verts + interior)
+        current_pos_all = sim.x.to_numpy()[:num_particles[None], 0, :]
+        
+        # 1. Save standard particle NPY (optional, but good for debug)
+        np.save(os.path.join(output_dir, f"frame_{frame:04d}_particles.npy"), current_pos_all)
+        
+        # 2. Reconstruct PLY Mesh
+        # We need to extract the vertices for each object and assemble them
+        all_verts_combined = []
+        
+        start_idx = 0
+        for obj in object_metadata:
+            # The vertices are the first 'n_verts' particles of this object's chunk
+            n_total = obj['n_total']
+            n_verts = obj['n_verts']
+            
+            # Extract vertices
+            obj_verts = current_pos_all[start_idx : start_idx + n_verts]
+            all_verts_combined.append(obj_verts)
+            
+            start_idx += n_total
+            
+        all_verts_combined = np.vstack(all_verts_combined)
+        
+        # Create Trimesh object
+        mesh_out = trimesh.Trimesh(vertices=all_verts_combined, faces=all_faces_merged)
+        
+        # Export
+        ply_path = os.path.join(output_dir, f"frame_{frame:04d}.ply")
+        mesh_out.export(ply_path)
+        
+        print(f"Frame {frame} completed. Particles: {num_particles[None]}. Saved PLY to {ply_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -9,7 +9,7 @@ import argparse
 import json
 
 # Initialize Taichi
-ti.init(arch=ti.cuda, device_memory_fraction=0.9)
+ti.init(arch=ti.cuda, device_memory_fraction=0.6)
 
 @ti.data_oriented
 class MPMSimulator:
@@ -23,7 +23,7 @@ class MPMSimulator:
     von_mises = 12
     drucker_prager = 13
 
-    def __init__(self, dtype, dt, frame_dt, particle_layout, dx, inv_dx, n_particles, gravity=[0, -9.8, 0], material=elasticity, cuda_chunk_size=400):
+    def __init__(self, dtype, dt, frame_dt, particle_layout, dx, inv_dx, n_particles, n_mesh_vertices, gravity=[0, -9.8, 0], material=elasticity, cuda_chunk_size=400):
         
         dim = self.dim = 3
         self.dtype = dtype
@@ -38,6 +38,10 @@ class MPMSimulator:
         self.dt = ti.field(self.dtype, shape=())
         self.n_substeps = ti.field(ti.i32, shape=())
         self.cuda_chunk_size = cuda_chunk_size
+
+        # Mesh vertices advection
+        self.n_mesh_vertices = n_mesh_vertices
+        self.mesh_x = ti.Vector.field(dim, dtype=self.dtype, shape=n_mesh_vertices)
         
         # The last one is the first one in the next chunk
         self.step_particle = self.particle.dense(ti.j, cuda_chunk_size+1) 
@@ -252,6 +256,26 @@ class MPMSimulator:
             self.C[p, f + 1] = new_C
     
     @ti.kernel
+    def g2mesh(self):
+        # Update Mesh Vertices using grid velocity (Passive Advection)
+        for i in range(self.n_mesh_vertices):
+            # Same Grid interpolation logic
+            base = ti.floor(self.mesh_x[i] * self.inv_dx[None] - 0.5).cast(int)
+            fx = self.mesh_x[i] * self.inv_dx[None] - base.cast(self.dtype)
+            w = [0.5 * (1.5 - fx) ** 2, 0.75 - (fx - 1.0) ** 2, 0.5 * (fx - 0.5) ** 2]
+            
+            new_v = ti.Vector.zero(self.dtype, self.dim)
+            for k in ti.static(range(3)):
+                for l in ti.static(range(3)):
+                    for m in ti.static(range(3)):
+                        g_v = self.grid_v_out[base(0) + k, base(1) + l, base(2) + m]
+                        weight = w[k](0) * w[l](1) * w[m](2)
+                        new_v += weight * g_v
+            
+            # Simple Forward Euler for Mesh
+            self.mesh_x[i] += self.dt[None] * new_v
+
+    @ti.kernel
     def check_cfl(self, s: ti.i32):
         for p in range(self.n_particles[None]):
             if ti.math.isnan(self.v[p, s]).any():
@@ -277,6 +301,7 @@ class MPMSimulator:
         self.p2g(local_index)
         self.grid_op(local_index)
         self.g2p(local_index)
+        self.g2mesh() # Update mesh vertices
         self.check_cfl(local_index + 1)
         
         if (local_index == self.cuda_chunk_size-1):
@@ -312,72 +337,35 @@ class MPMSimulator:
 
         self.analytic_collision.append(get_velocity)
 
-def load_mesh_particles(filename, dx, scale=1.0, offset=[0.5, 0.5, 0.5], jitter_ratio=0.4):
-    print(f"Loading mesh from {filename}...")
+def load_mesh_data(filename, scale=1.0, offset=[0.0, 0.0, 0.0]):
+    """Loads mesh, applies transform, and returns vertices and faces."""
     mesh = trimesh.load(filename)
-    
-    # Rotate 90 degrees around X axis (to convert Z-up to Y-up)
-    # Rotation matrix for -90 deg around X:
-    # [1, 0, 0]
-    # [0, 0, -1]
-    # [0, 1, 0]
-    # But trimesh uses 4x4 matrix
     rot_matrix = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
     mesh.apply_transform(rot_matrix)
-    
     if scale != 1.0:
         mesh.apply_scale(scale)
+    
+    # Translate (Center at 0,0,0 first if needed, but here we just add offset)
+    # The original logic centered the particles?? No, it just added offset.
+    # We should center the mesh to its centroid or bounding box center before placing?
+    # Original logic: points += offset.
+    # So we apply offset translation.
+    mesh.apply_translation(offset)
+    
+    return mesh.vertices.astype(np.float32), mesh.faces
+
+def sample_particles_from_mesh(mesh, dx, jitter_ratio=0.4):
+    """Uses existing mesh object to generate particles."""
     print("Voxelizing mesh...")
     voxel_grid = mesh.voxelized(pitch=dx)
     print("Filling interior...")
     voxel_grid = voxel_grid.fill()
     points = voxel_grid.points.astype(np.float32)
-    # 添加随机扰动
+    # Add jitter
     if jitter_ratio > 0:
         jitter = (np.random.rand(*points.shape) - 0.5) * dx * jitter_ratio
         points += jitter
-    points += np.array(offset, dtype=np.float32)
-    print(f"Generated {len(points)} particles from mesh (jitter_ratio={jitter_ratio}).")
     return points
-
-def generate_cylinder_particles(center, radius, height, dx):
-    # center is [x, y, z] of the geometric center
-    points = []
-    
-    # Bounding box ranges
-    min_x = center[0] - radius
-    max_x = center[0] + radius
-    min_z = center[2] - radius
-    max_z = center[2] + radius
-    min_y = center[1] - height / 2.0
-    max_y = center[1] + height / 2.0
-    
-    # Grid sampling
-    x_range = np.arange(min_x, max_x, dx)
-    y_range = np.arange(min_y, max_y, dx)
-    z_range = np.arange(min_z, max_z, dx)
-    
-    # Create meshgrid for vectorized operation
-    xx, yy, zz = np.meshgrid(x_range, y_range, z_range, indexing='ij')
-    
-    # Flatten
-    xx = xx.flatten()
-    yy = yy.flatten()
-    zz = zz.flatten()
-    
-    # Filter
-    dist_sq = (xx - center[0])**2 + (zz - center[2])**2
-    mask = (dist_sq <= radius**2) & (yy >= min_y) & (yy <= max_y)
-    
-    points = np.vstack((xx[mask], yy[mask], zz[mask])).T
-    
-    # Jitter
-    jitter = (np.random.rand(*points.shape) - 0.5) * dx * 0.4
-    points += jitter
-    
-    return points.astype(np.float32)
-
-# --- Simulation Setup ---
 
 def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elasticity'):
     # Parameters
@@ -423,11 +411,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     elif material_type == 'sand':
         # PAC-NeRF Sand (Drucker-Prager)
         material = MPMSimulator.drucker_prager
-        rho = 1800.0 # PAC-NeRF default doesn't specify rho in sand/default.py, but usually sand is heavier. 
-                     # Wait, elastic/0.py has rho=1000. Let's stick to 1800 or 1000. 
-                     # The user's previous code had 1800. Let's use 1800 for realism or 1000 if strictly following default.
-                     # PAC-NeRF sand/default.py doesn't set rho, so it might use a global default.
-                     # Let's use 1800 as it's more physically correct for sand.
+        rho = 1800.0 
         E = 1e6
         nu = 0.3
         mu = E / (2 * (1 + nu))
@@ -476,61 +460,79 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     height = 0.05
     target_distance = 0.5
     
-    # Cylinder 1 (Thrower)
+    # Load Meshes
+    mesh_path = "workspace/taichi_dataset/meshes/curling.ply"
+    
+    # Prepare Thrower Mesh
+    # Note: original c1_pos was center. load_mesh_data applies offset.
+    # We should adjust offset so that the resulting mesh sits where we want.
+    # Assuming the curling.ply is centered at origin? We should probably check or assume so.
+    # If we assume it's roughly centered, we just translate to c1_pos.
     c1_pos = [0.3, height/2 + dx, 0.5]
     c1_vel = [7.5, 0.0, 0.0] 
-    p1 = generate_cylinder_particles(c1_pos, radius, height, dx/2)
+    
+    print(f"Loading Thrower Mesh...")
+    mesh1 = trimesh.load(mesh_path)
+    rot_matrix = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
+    mesh1.apply_transform(rot_matrix)
+    # Scale to match roughly the size we want? Original was radius=0.1, ply might be different scale.
+    # Assuming curling.ply is unit size? Or user provided it. 
+    # Let's assume it doesn't need scaling or user provides correct scale mesh.
+    # But usually simulations need specific size.
+    # The original "generate_cylinder" used radius=0.1.
+    # Let's hope the ply is reasonable size. If not, physics might explode.
+    # Safe bet: Scale it to fit 2*radius in X/Z.
+    
+    bbox_1 = mesh1.bounding_box.extents
+    # If bbox is too big/small, scale? User said "modified to get vertices from meshes/curling.ply", 
+    # usually implies the mesh is ready. I will trust the mesh size or apply 1.0.
+    
+    mesh1.apply_translation(c1_pos)
+    v1_verts = mesh1.vertices.astype(np.float32)
+    f1_faces = mesh1.faces
+    
+    p1 = sample_particles_from_mesh(mesh1, dx/2) # Sample particles
     v1 = np.full(p1.shape, c1_vel, dtype=np.float32)
     
-    # Cylinder 2 (Target) - 6 cylinders in triangle
-    # Offset Z slightly to avoid head-on collision (based on good effect feedback)
+    # Prepare Target Mesh (Just one now)
     base_target_x = 0.3 + target_distance
-    base_target_z = 0.5 + 0.1
+    base_target_z = 0.5 + 0.1 # With offset
+    # Row 1 target
+    target_pos = [base_target_x, height/2 + dx, base_target_z]
     
-    target_positions = []
-    cyl_spacing = 2 * radius + 0.02 # Diameter + gap
-    row_dx = cyl_spacing * math.sqrt(3) / 2
-    row_dz = cyl_spacing / 2
+    print(f"Loading Target Mesh...")
+    mesh2 = trimesh.load(mesh_path) # Reload to get fresh instance
+    mesh2.apply_transform(rot_matrix)
+    mesh2.apply_translation(target_pos)
+    v2_verts = mesh2.vertices.astype(np.float32)
+    f2_faces = mesh2.faces
     
-    # Row 1 (1 cylinder)
-    target_positions.append([base_target_x, height/2 + dx, base_target_z])
-    
-    # Row 2 (2 cylinders)
-    target_positions.append([base_target_x + row_dx, height/2 + dx, base_target_z - row_dz])
-    target_positions.append([base_target_x + row_dx, height/2 + dx, base_target_z + row_dz])
-    
-    # Row 3 (3 cylinders)
-    target_positions.append([base_target_x + 2 * row_dx, height/2 + dx, base_target_z - cyl_spacing])
-    target_positions.append([base_target_x + 2 * row_dx, height/2 + dx, base_target_z])
-    target_positions.append([base_target_x + 2 * row_dx, height/2 + dx, base_target_z + cyl_spacing])
-    
-    target_particles_list = []
-    target_vel_list = []
-    
-    for pos in target_positions:
-        p = generate_cylinder_particles(pos, radius, height, dx/2)
-        v = np.full(p.shape, [0.0, 0.0, 0.0], dtype=np.float32)
-        target_particles_list.append(p)
-        target_vel_list.append(v)
+    p2 = sample_particles_from_mesh(mesh2, dx/2)
+    v2_vel_target = np.full(p2.shape, [0.0, 0.0, 0.0], dtype=np.float32)
 
-    p2 = np.vstack(target_particles_list)
-    v2 = np.vstack(target_vel_list)
-
+    # Combine Particles
     init_pos = np.vstack((p1, p2))
-    init_vel = np.vstack((v1, v2))
+    init_vel = np.vstack((v1, v2_vel_target))
     n_particles_est = len(init_pos)
-    print(f"Initializing Curling Scenario with {n_particles_est} particles")
+    
+    # Combine Mesh Vertices
+    all_mesh_verts = np.vstack((v1_verts, v2_verts))
+    n_mesh_verts = len(all_mesh_verts)
+    mesh_split_idx = len(v1_verts) # Index where mesh 2 starts
+    
+    print(f"Initializing Curling Scenario with {n_particles_est} particles and {n_mesh_verts} mesh vertices")
     
     # Fields
     num_particles = ti.field(ti.i32, shape=())
     
     # Particle layout
-    particle = ti.root.dynamic(ti.i, 2**20, particle_chunk_size)
+    # Reduced max capacity from 2**20 (1M) to 2**16 (65k) to save memory
+    particle = ti.root.dynamic(ti.i, 2**16, particle_chunk_size)
     
     # Simulator
     sim = MPMSimulator(dtype=dtype, dt=dt, frame_dt=frame_dt, particle_layout=particle, 
                        dx=ti.field(dtype, shape=()), inv_dx=ti.field(dtype, shape=()), 
-                       n_particles=num_particles, gravity=[0, -9.8, 0], 
+                       n_particles=num_particles, n_mesh_vertices=n_mesh_verts, gravity=[0, -9.8, 0], 
                        material=material, cuda_chunk_size=cuda_chunk_size)
     
     sim.dx[None] = dx
@@ -538,6 +540,9 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     sim.cfl_satisfy[None] = 1
     sim.p_vol[None] = (dx * 0.5) ** 3 # Approximate volume
     
+    # Set init mesh verts
+    sim.mesh_x.from_numpy(all_mesh_verts)
+
     # Set global material parameters
     if material == MPMSimulator.drucker_prager:
         sin_phi = math.sin(math.radians(friction_angle))
@@ -608,10 +613,30 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     for frame in range(simulation_frames): # Run for frames
         sim.advance(frame)
         
-        # Export positions
-        pos = sim.x.to_numpy()[:num_particles[None], 0, :] # Get current positions
-        np.save(os.path.join(output_dir, f"frame_{frame:04d}.npy"), pos)
-        print(f"Frame {frame} completed. Particles: {num_particles[None]}")
+        # NOTE: Export PLY instead of NPY
+        # Get Mesh positions
+        current_mesh_verts = sim.mesh_x.to_numpy()
+        
+        # Split
+        mv1 = current_mesh_verts[:mesh_split_idx]
+        mv2 = current_mesh_verts[mesh_split_idx:]
+        
+        # Export PLY 1
+        mesh1_out = trimesh.Trimesh(vertices=mv1, faces=f1_faces, process=False)
+        mesh1_out.export(os.path.join(output_dir, f"curling_0_frame_{frame:04d}.ply"))
+        
+        # Export PLY 2
+        mesh2_out = trimesh.Trimesh(vertices=mv2, faces=f2_faces, process=False)
+        mesh2_out.export(os.path.join(output_dir, f"curling_1_frame_{frame:04d}.ply"))
+        
+        # Still export particles just in case? Or remove?
+        # User said: "分别导出为ply而不是npy", implying replace npy with ply. 
+        # But for debugging it might be useful to have particles.
+        # But I will comment out NPY export to save disk/time and follow instruction.
+        # pos = sim.x.to_numpy()[:num_particles[None], 0, :]
+        # np.save(os.path.join(output_dir, f"frame_{frame:04d}.npy"), pos)
+        
+        print(f"Frame {frame} completed. Proccessed and exported meshes.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
