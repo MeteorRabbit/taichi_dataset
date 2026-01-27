@@ -1,4 +1,4 @@
-#冰壶简单模拟
+# 冰壶简单模拟改成硬的物体撞到软的物体
 
 import taichi as ti
 import numpy as np
@@ -554,8 +554,15 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
         sim.plastic_viscosity[None] = plastic_viscosity
     
     # Initialize particles
+    # Soft material properties (Object 2)
+    # We simply reduce E for the second object to make it softer.
+    E_soft = E * 0.1 # 10x softer
+    mu_soft = E_soft / (2 * (1 + nu))
+    lam_soft = E_soft * nu / ((1 + nu) * (1 - 2 * nu))
+
+    # Initialize particles
     @ti.kernel
-    def init_particles_with_vel(n: int, pos_field: ti.template(), vel_field: ti.template()):
+    def init_particles_with_vel(n: int, pos_field: ti.template(), vel_field: ti.template(), split_idx: int):
         num_particles[None] = n
         for i in range(n):
             sim.x[i, 0] = pos_field[i]
@@ -564,15 +571,24 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
             sim.F[i, 0] = ti.Matrix.identity(dtype, 3)
             sim.C[i, 0] = ti.Matrix.zero(dtype, 3, 3)
             sim.p_mass[i] = sim.p_vol[None] * rho
-            sim.mu[i] = mu
-            sim.lam[i] = lam
+            
+            if i < split_idx:
+                # Object 1 (Harder)
+                sim.mu[i] = mu
+                sim.lam[i] = lam
+            else:
+                # Object 2 (Softer)
+                sim.mu[i] = mu_soft
+                sim.lam[i] = lam_soft
 
     pos_field = ti.Vector.field(3, dtype=dtype, shape=n_particles_est)
     vel_field = ti.Vector.field(3, dtype=dtype, shape=n_particles_est)
     pos_field.from_numpy(init_pos)
     vel_field.from_numpy(init_vel)
     
-    init_particles_with_vel(n_particles_est, pos_field, vel_field)
+    # split_idx is len(p1)
+    split_idx = len(p1)
+    init_particles_with_vel(n_particles_est, pos_field, vel_field, split_idx)
     
     # Add boundary (Floor) - Ice (Slip)
     sim.add_surface_collider(point=[0, 0.0, 0], normal=[0, 1, 0], surface=MPMSimulator.surface_slip)
@@ -640,7 +656,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/particles_output/output_curling", help="Output directory for simulation results")
+    parser.add_argument('-o', '--output_dir', type=str, default="workspace/taichi_dataset/particles_output/output_soft_hard", help="Output directory for simulation results")
     parser.add_argument('-m', '--material', type=str, default="elasticity", 
                         choices=['elasticity', 'plasticine', 'sand', 'newtonian', 'non_newtonian', 'toothpaste_custom'],
                         help="Material type for simulation")
