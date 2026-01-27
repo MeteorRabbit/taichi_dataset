@@ -13,12 +13,12 @@ INPUT_DIR = os.path.join(BASE_DIR, "particles_output/output_soft_hard")
 OBJECTS_CONFIG = {
     "Curling_Thrower": {
         "prefix": "curling_0",
-        "material_name": "RedHandleMaterial",
+        "material_name": "RedHandleMaterial", # Ensure this matches your Blender material name
         "color": (0.8, 0.1, 0.1, 1) 
     },
     "Curling_Target": {
         "prefix": "curling_1",
-        "material_name": "BlueStoneMaterial",
+        "material_name": "BlueStoneMaterial", # Ensure this matches your Blender material name
         "color": (0.1, 0.1, 0.8, 1)
     }
 }
@@ -42,6 +42,7 @@ def ensure_material(mat_name, color):
     """确保材质存在，如果不存在则创建"""
     mat = bpy.data.materials.get(mat_name)
     if mat is None:
+        # Only create if it really doesn't exist
         mat = bpy.data.materials.new(name=mat_name)
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
@@ -108,11 +109,14 @@ def load_ply_frame(frame_idx):
                 pass
             
             # 分配材质
-            mat = ensure_material(config["material_name"], config["color"])
-            if imported_obj.data.materials:
-                imported_obj.data.materials[0] = mat
-            else:
-                imported_obj.data.materials.append(mat)
+            # Only assign if not already assigned or if we want to force specific material
+            mat_name = config.get("material_name")
+            if mat_name:
+                 mat = ensure_material(mat_name, config["color"])
+                 if imported_obj.data.materials:
+                      imported_obj.data.materials[0] = mat
+                 else:
+                      imported_obj.data.materials.append(mat)
 
 def update_particles_handler(scene):
     """

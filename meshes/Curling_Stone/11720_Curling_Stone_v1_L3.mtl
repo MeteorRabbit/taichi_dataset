@@ -1,0 +1,19 @@
+# 3ds Max Wavefront OBJ Exporter v0.97b - (c)2007 guruware
+# File Created: 18.11.2011 10:48:47
+
+newmtl 11720_Curling_Stone_v1
+	Ns 49.0000
+	Ni 1.5000
+	d 1.0000
+	Tr 0.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.5882 0.5882 0.5882
+	Kd 0.5882 0.5882 0.5882
+	Ks 0.5400 0.5400 0.5400
+	Ke 0.0000 0.0000 0.0000
+	map_Ka 11720_Curling_Stone_diffuse_v1.jpg
+	map_Kd 11720_Curling_Stone_diffuse_v1.jpg
+	map_Ks 11720_Curling_Stone_spec_v1.jpg
+	map_bump 11720_Curling_Stone_bump_v1.jpg
+	bump 11720_Curling_Stone_bump_v1.jpg

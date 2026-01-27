@@ -352,6 +352,9 @@ def load_mesh_vertices_and_faces(filename, scale=1.0, offset=[0.5, 0.5, 0.5]):
         print("Scene loaded, using first geometry.")
         mesh = list(mesh.geometry.values())[0]
 
+    # Check for UVs on source mesh
+    uv = mesh.visual.uv if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None else None
+
     # Rotate 90 degrees around X axis (to convert Z-up to Y-up)
     # Rotation matrix for -90 deg around X:
     rot_matrix = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
@@ -367,7 +370,7 @@ def load_mesh_vertices_and_faces(filename, scale=1.0, offset=[0.5, 0.5, 0.5]):
     vertices += np.array(offset, dtype=np.float32)
     
     print(f"Loaded {len(vertices)} vertices and {len(faces)} faces.")
-    return vertices, faces
+    return vertices, faces, uv
 
 # --- Simulation Setup ---
 
@@ -468,10 +471,12 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     init_pos = None
     mesh_faces = None
+    mesh_uv = None
 
     if ply_path and os.path.exists(ply_path):
         # Load mesh vertices directly
-        init_pos, mesh_faces = load_mesh_vertices_and_faces(ply_path, scale=1.0, offset=[0.0, 0.1, 0.0])
+        # [MODIFIED] Unpack UVs as well
+        init_pos, mesh_faces, mesh_uv = load_mesh_vertices_and_faces(ply_path, scale=1.0, offset=[0.0, 0.1, 0.0])
         n_particles_est = len(init_pos)
         print(f"Initializing with {n_particles_est} vertex particles from {ply_path}")
     else:
@@ -589,7 +594,10 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
         pos = sim.fetch_x(num_particles[None], 0) # Get current positions
         
         if mesh_faces is not None:
-             mesh = trimesh.Trimesh(vertices=pos, faces=mesh_faces)
+             mesh = trimesh.Trimesh(vertices=pos, faces=mesh_faces, process=False)
+             # Re-apply UVs
+             if mesh_uv is not None:
+                 mesh.visual = trimesh.visual.TextureVisuals(uv=mesh_uv)
              mesh.export(os.path.join(output_dir, f"frame_{frame:04d}.ply"))
         else:
              np.save(os.path.join(output_dir, f"frame_{frame:04d}.npy"), pos)

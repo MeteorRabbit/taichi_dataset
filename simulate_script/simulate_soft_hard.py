@@ -473,6 +473,9 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     print(f"Loading Thrower Mesh...")
     mesh1 = trimesh.load(mesh_path)
+    # [NEW] Check for UVs on mesh1
+    uv1 = mesh1.visual.uv if hasattr(mesh1.visual, 'uv') and mesh1.visual.uv is not None else None
+
     rot_matrix = trimesh.transformations.rotation_matrix(np.radians(-90), [1, 0, 0])
     mesh1.apply_transform(rot_matrix)
     # Scale to match roughly the size we want? Original was radius=0.1, ply might be different scale.
@@ -502,6 +505,9 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     print(f"Loading Target Mesh...")
     mesh2 = trimesh.load(mesh_path) # Reload to get fresh instance
+    # [NEW] Check for UVs on mesh2
+    uv2 = mesh2.visual.uv if hasattr(mesh2.visual, 'uv') and mesh2.visual.uv is not None else None
+
     mesh2.apply_transform(rot_matrix)
     mesh2.apply_translation(target_pos)
     v2_verts = mesh2.vertices.astype(np.float32)
@@ -639,10 +645,16 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
         
         # Export PLY 1
         mesh1_out = trimesh.Trimesh(vertices=mv1, faces=f1_faces, process=False)
+        # [NEW] Re-apply UVs
+        if uv1 is not None:
+             mesh1_out.visual = trimesh.visual.TextureVisuals(uv=uv1)
         mesh1_out.export(os.path.join(output_dir, f"curling_0_frame_{frame:04d}.ply"))
         
         # Export PLY 2
         mesh2_out = trimesh.Trimesh(vertices=mv2, faces=f2_faces, process=False)
+        # [NEW] Re-apply UVs
+        if uv2 is not None:
+             mesh2_out.visual = trimesh.visual.TextureVisuals(uv=uv2)
         mesh2_out.export(os.path.join(output_dir, f"curling_1_frame_{frame:04d}.ply"))
         
         # Still export particles just in case? Or remove?

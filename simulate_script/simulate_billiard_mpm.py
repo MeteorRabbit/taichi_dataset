@@ -325,6 +325,9 @@ def load_mesh_and_fill(filename, dx, scale=1.0, jitter_ratio=0.4):
     faces = np.array(mesh.faces, dtype=np.int32)
     n_verts = len(surface_verts)
     
+    # [NEW] Get UVs
+    uvs = mesh.visual.uv if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None else None
+    
     # 2. Fill Interior
     print("Voxelizing mesh to fill interior...")
     # Use a slightly smaller pitch ensures we get particles inside
@@ -348,7 +351,7 @@ def load_mesh_and_fill(filename, dx, scale=1.0, jitter_ratio=0.4):
     # Combine: Vertices FIRST, then interior
     all_points = np.vstack((surface_verts, interior_points))
     
-    return all_points, faces, n_verts
+    return all_points, faces, n_verts, uvs
 
 # Helper to place a mesh-based object in the scene
 def place_object(base_points, base_faces, n_verts, offset, existing_vert_count):
@@ -491,7 +494,8 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     # Note: center of mesh is assumed to be 0,0,0 after load? trimesh usually loads as is.
     # We might need to center it.
     
-    base_particles, base_faces, n_verts_per_obj = load_mesh_and_fill(mesh_path, dx/2, scale=scale_factor, jitter_ratio=0.4)
+    # [MODIFIED] Capture UVs
+    base_particles, base_faces, n_verts_per_obj, base_uvs = load_mesh_and_fill(mesh_path, dx/2, scale=scale_factor, jitter_ratio=0.4)
     # Center the base particles to 0,0,0
     center_offset = -np.mean(base_particles[:n_verts_per_obj], axis=0) # Center based on vertices
     base_particles += center_offset
@@ -500,6 +504,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     # helper for tracking
     current_global_vert_count = 0
     global_faces = [] # List of face arrays
+    global_uvs = [] # List of UV arrays
     
     def add_ball_to_scene(pos, vel):
         nonlocal current_global_vert_count
@@ -511,6 +516,10 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
         all_vel_list.append(v)
         global_faces.append(f)
         
+        # [NEW] Add UVs for this object
+        if base_uvs is not None:
+            global_uvs.append(base_uvs)
+
         # Track this object
         object_metadata.append({
             'type': 'ball',
@@ -555,6 +564,9 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
     
     # Pre-merge faces for cheaper export loop
     all_faces_merged = np.vstack(global_faces)
+    
+    # [NEW] Pre-merge UVs
+    all_uvs_combined = np.vstack(global_uvs) if global_uvs else None
 
     # Fields
     num_particles = ti.field(ti.i32, shape=())
@@ -651,32 +663,33 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='elas
         # 1. Save standard particle NPY (optional, but good for debug)
         np.save(os.path.join(output_dir, f"frame_{frame:04d}_particles.npy"), current_pos_all)
         
-        # 2. Reconstruct PLY Mesh
-        # We need to extract the vertices for each object and assemble them
-        all_verts_combined = []
-        
+        # 2. Reconstruct PLY Mesh for EACH object
         start_idx = 0
-        for obj in object_metadata:
+        for i, obj in enumerate(object_metadata):
             # The vertices are the first 'n_verts' particles of this object's chunk
             n_total = obj['n_total']
             n_verts = obj['n_verts']
             
-            # Extract vertices
+            # Extract vertices for THIS object
             obj_verts = current_pos_all[start_idx : start_idx + n_verts]
-            all_verts_combined.append(obj_verts)
             
+            # Create Trimesh object using BASE faces (since we export individually)
+            # base_faces are 0-indexed relative to the start of the object
+            mesh_out = trimesh.Trimesh(vertices=obj_verts, faces=base_faces, process=False)
+            
+            # Apply UVs (same UVs for all balls)
+            if base_uvs is not None:
+                mesh_out.visual = trimesh.visual.TextureVisuals(uv=base_uvs)
+
+            # Export separate file
+            ply_filename = f"billiard_{i}_frame_{frame:04d}.ply"
+            ply_path = os.path.join(output_dir, ply_filename)
+            mesh_out.export(ply_path)
+            
+            # Move to next object
             start_idx += n_total
-            
-        all_verts_combined = np.vstack(all_verts_combined)
         
-        # Create Trimesh object
-        mesh_out = trimesh.Trimesh(vertices=all_verts_combined, faces=all_faces_merged)
-        
-        # Export
-        ply_path = os.path.join(output_dir, f"frame_{frame:04d}.ply")
-        mesh_out.export(ply_path)
-        
-        print(f"Frame {frame} completed. Particles: {num_particles[None]}. Saved PLY to {ply_path}")
+        print(f"Frame {frame} completed. Particles: {num_particles[None]}. Exported individual meshes.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

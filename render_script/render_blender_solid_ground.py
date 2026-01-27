@@ -7,8 +7,11 @@ import sys
 # 基础路径：使用当前脚本所在目录
 BASE_DIR = "D:/Experiments/gic/taichi_dataset"
 
-# 材质名称 (决定加载哪个文件夹的数据) - 此时不再作为路径的一部分
-MATERIAL_TYPE = "simulation" 
+# 材质配置
+MESH_CONFIG = {
+    "material_name": "DuckMaterial", # Should match Blender material
+    "color": (1.0, 0.8, 0.0, 1.0)
+}
 
 # 输入路径
 INPUT_DIR = os.path.join(BASE_DIR, "particles_output/output_solid_ground")
@@ -23,6 +26,18 @@ def clean_scene():
     for block in bpy.data.meshes:
         if not block.users:
             bpy.data.meshes.remove(block)
+
+def ensure_material(mat_name, color):
+    """确保材质存在"""
+    mat = bpy.data.materials.get(mat_name)
+    if mat is None:
+        mat = bpy.data.materials.new(name=mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        bsdf = nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs['Base Color'].default_value = color
+    return mat
 
 def update_mesh_handler(scene):
     """
@@ -62,9 +77,20 @@ def update_mesh_handler(scene):
         imported_obj = bpy.context.selected_objects[0]
         imported_obj.name = obj_name
         
+        # 赋予材质
+        mat_name = MESH_CONFIG["material_name"]
+        color = MESH_CONFIG["color"]
+        mat = ensure_material(mat_name, color)
+        if imported_obj.data.materials:
+            imported_obj.data.materials[0] = mat
+        else:
+            imported_obj.data.materials.append(mat)
+        
         # 可选: 设置平滑
-        # bpy.context.view_layer.objects.active = imported_obj
-        # bpy.ops.object.shade_smooth()
+        try:
+             bpy.ops.object.shade_smooth()
+        except:
+             pass
 
 def setup_handler():
     """注册帧更新回调"""
