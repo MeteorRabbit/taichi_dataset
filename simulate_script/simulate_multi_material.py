@@ -348,6 +348,9 @@ def load_mesh_vertices_and_faces(filename, scale=1.0, offset=[0.5, 0.5, 0.5]):
     vertices = mesh.vertices.astype(np.float32)
     faces = mesh.faces
     
+    # [NEW] Get UVs
+    uvs = mesh.visual.uv if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None else None
+    
     # --- Auto Centering ---
     # Calculate current centroid
     centroid = (vertices.min(axis=0) + vertices.max(axis=0)) / 2.0
@@ -359,7 +362,7 @@ def load_mesh_vertices_and_faces(filename, scale=1.0, offset=[0.5, 0.5, 0.5]):
     vertices += np.array(offset, dtype=np.float32)
     
     print(f"Loaded {len(vertices)} vertices and {len(faces)} faces.")
-    return vertices, faces
+    return vertices, faces, uvs
 
 def load_mesh_particles(filename, dx, scale=1.0, offset=[0.5, 0.5, 0.5], jitter_ratio=0.4):
     print(f"Loading mesh from {filename}...")
@@ -496,11 +499,12 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
     
     init_pos_obj = None
     obj_faces = None
+    obj_uvs = None
 
     if ply_path and os.path.exists(ply_path):
         # Load mesh vertices directly
         # First load without offset to calculate size
-        temp_verts, obj_faces = load_mesh_vertices_and_faces(ply_path, scale=1.0, offset=[0.0, 0.0, 0.0])
+        temp_verts, obj_faces, _ = load_mesh_vertices_and_faces(ply_path, scale=1.0, offset=[0.0, 0.0, 0.0])
         
         # Calculate bounds
         min_b = temp_verts.min(axis=0)
@@ -519,7 +523,7 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
         # Reload with correct scale and offset
         # Offset y to 0.3 (sand surface is 0.0, sand bottom is -0.2)
         # 0.3 is a higher drop height for better splash
-        init_pos_obj, obj_faces = load_mesh_vertices_and_faces(ply_path, scale=scale_factor, offset=[0.0, 0.3, 0.0])
+        init_pos_obj, obj_faces, obj_uvs = load_mesh_vertices_and_faces(ply_path, scale=scale_factor, offset=[0.0, 0.3, 0.0])
         print(f"Object particles (vertices): {len(init_pos_obj)}")
     else:
         # Fallback cube
@@ -678,7 +682,10 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
         
         # Save Object as PLY mesh if faces exist, else NPY
         if obj_faces is not None:
-             mesh = trimesh.Trimesh(vertices=pos_obj, faces=obj_faces)
+             mesh = trimesh.Trimesh(vertices=pos_obj, faces=obj_faces, process=False)
+             # [NEW] Apply UVs
+             if obj_uvs is not None:
+                 mesh.visual = trimesh.visual.TextureVisuals(uv=obj_uvs)
              mesh.export(os.path.join(output_dir, f"frame_{frame:04d}_obj.ply"))
         else:
              np.save(os.path.join(output_dir, f"frame_{frame:04d}_obj.npy"), pos_obj)

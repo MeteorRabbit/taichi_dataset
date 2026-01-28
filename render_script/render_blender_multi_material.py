@@ -33,30 +33,31 @@ def clean_scene():
 
     for block in bpy.data.meshes:
         if not block.users: bpy.data.meshes.remove(block)
-    for block in bpy.data.materials:
-        if not block.users: bpy.data.materials.remove(block)
 
-def create_material(name, props):
-    mat = bpy.data.materials.new(name=name)
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    nodes.clear()
-    
-    shader = nodes.new(type='ShaderNodeBsdfPrincipled')
-    shader.location = (0, 0)
-    output = nodes.new(type='ShaderNodeOutputMaterial')
-    output.location = (300, 0)
-    mat.node_tree.links.new(shader.outputs[0], output.inputs[0])
-    
-    shader.inputs['Base Color'].default_value = props.get("color", (1,1,1,1))
-    shader.inputs['Roughness'].default_value = props.get("roughness", 0.5)
-    
-    if 'Transmission Weight' in shader.inputs:
-        shader.inputs['Transmission Weight'].default_value = props.get("transmission", 0.0)
-    elif 'Transmission' in shader.inputs:
-        shader.inputs['Transmission'].default_value = props.get("transmission", 0.0)
+def ensure_material(name, props):
+    mat = bpy.data.materials.get(name)
+    if mat is None:
+        mat = bpy.data.materials.new(name=name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        nodes.clear()
         
-    shader.inputs['IOR'].default_value = props.get("ior", 1.45)
+        shader = nodes.new(type='ShaderNodeBsdfPrincipled')
+        shader.location = (0, 0)
+        output = nodes.new(type='ShaderNodeOutputMaterial')
+        output.location = (300, 0)
+        mat.node_tree.links.new(shader.outputs[0], output.inputs[0])
+        
+        shader.inputs['Base Color'].default_value = props.get("color", (1,1,1,1))
+        shader.inputs['Roughness'].default_value = props.get("roughness", 0.5)
+        
+        # 兼容不同版本的 Principal BSDF 接口
+        if 'Transmission Weight' in shader.inputs:
+            shader.inputs['Transmission Weight'].default_value = props.get("transmission", 0.0)
+        elif 'Transmission' in shader.inputs:
+            shader.inputs['Transmission'].default_value = props.get("transmission", 0.0)
+            
+        shader.inputs['IOR'].default_value = props.get("ior", 1.45)
     return mat
 
 def fibonacci_sphere(samples=10):
@@ -171,7 +172,7 @@ def setup_particles_ground_sand():
     # 设置材质
     mat_node = node_group.nodes.new('GeometryNodeSetMaterial')
     mat_node.location = (550, 0)
-    mat = create_material("SandMaterial", MATERIALS_CONFIG["sand"])
+    mat = ensure_material("SandMaterial", MATERIALS_CONFIG["sand"])
     mat_node.inputs['Material'].default_value = mat
     
     # 输出
@@ -291,7 +292,8 @@ def main(should_render=False):
     ground_container = setup_particles_ground_sand()
     
     # 2. Setup Object Material (Elastic)
-    mat_obj = create_material("ElasticMaterial", MATERIALS_CONFIG["elastic"])
+    # Use "DuckMaterial" to share/reuse the material from the solid_ground scene
+    mat_obj = ensure_material("DuckMaterial", MATERIALS_CONFIG["elastic"])
     
     scene = bpy.context.scene
     scene.render.engine = RENDER_ENGINE
@@ -359,7 +361,7 @@ if __name__ == "__main__":
             update_ground(ground_container, frame)
         
         # 为了避免材质重复创建，可以只获取
-        mat_obj = bpy.data.materials.get("ElasticMaterial")
+        mat_obj = bpy.data.materials.get("DuckMaterial")
         if mat_obj:
             update_object(frame, mat_obj)
             
