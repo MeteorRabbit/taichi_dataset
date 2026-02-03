@@ -261,6 +261,10 @@ class MPMSimulator:
                         weight = w[i](0) * w[j](1) * w[k](2)
                         new_v += weight * g_v
                         new_C += 4 * weight * g_v.outer_product(dpos) * self.inv_dx[None]
+            
+
+
+
 
             self.v[p, f + 1] = new_v
             self.x[p, f + 1] = self.x[p, f] + self.dt[None] * self.v[p, f + 1]
@@ -455,9 +459,10 @@ def run_simulation(output_dir="workspace/taichi/output_sim", material_type='non_
             nu = 0.3
             mu = E / (2 * (1 + nu))
             lam = E * nu / ((1 + nu) * (1 - 2 * nu))
-            friction_angle = 45.0 # Increased from 10.0 to 45.0 to prevent liquid-like behavior
+            friction_angle = 42.0 # [NEW] Increased to 42.0 for steeper piling
             sin_phi = math.sin(math.radians(friction_angle))
             fric = math.sqrt(2.0 / 3.0) * 2.0 * sin_phi / (3.0 - sin_phi)
+            coh = 0.5 # [NEW] Added slight cohesion to mimic damp sand and allow "heaping"
 
         elif m_type == 'newtonian':
             m_id = MPMSimulator.viscous_fluid
