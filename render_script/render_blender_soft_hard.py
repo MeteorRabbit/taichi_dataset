@@ -1,24 +1,40 @@
 import bpy
 import os
+import sys
+import math
+import json
+import numpy as np
+from mathutils import Vector
 
 # --- 配置 ---
 # 基础路径
-BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+if sys.platform == "win32":
+    BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+else:
+    BASE_DIR = "/root/workspace/taichi_dataset"
 
-# 输入路径
+# 默认渲染开关 (方便在 IDE 中直接修改运行)
+SHOULD_RENDER_DEFAULT = False
+
+# 输入输出路径
 INPUT_DIR = os.path.join(BASE_DIR, "particles_output/output_soft_hard")
+OUTPUT_DIR = os.path.join(BASE_DIR, "render_output/soft_hard")
+
+# 渲染设置
+RENDER_ENGINE = 'CYCLES'
+SAMPLES = 128
 
 # 定义对象映射：Key 是 Blender 场景中的对象名，Value 是 PLY 文件的前缀
 # 这样我们可以支持多个独立的物体序列
 OBJECTS_CONFIG = {
     "Curling_Thrower": {
         "prefix": "curling_0",
-        "material_name": "RedHandleMaterial", # Ensure this matches your Blender material name
+        "material_name": "Curling_Stone", # Ensure this matches your Blender material name
         "color": (0.8, 0.1, 0.1, 1) 
     },
     "Curling_Target": {
         "prefix": "curling_1",
-        "material_name": "BlueStoneMaterial", # Ensure this matches your Blender material name
+        "material_name": "Curling_Stone", # Ensure this matches your Blender material name
         "color": (0.1, 0.1, 0.8, 1)
     }
 }
@@ -42,7 +58,6 @@ def ensure_material(mat_name, color):
     """确保材质存在，如果不存在则创建"""
     mat = bpy.data.materials.get(mat_name)
     if mat is None:
-        # Only create if it really doesn't exist
         mat = bpy.data.materials.new(name=mat_name)
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
@@ -52,6 +67,74 @@ def ensure_material(mat_name, color):
             bsdf.inputs['Roughness'].default_value = 0.4
             bsdf.inputs['Metallic'].default_value = 0.1
     return mat
+
+def setup_cameras():
+    # 使用 Fibonacci Sphere 生成均匀视点
+    def fibonacci_sphere(samples=10):
+        points = []
+        phi = math.pi * (3. - math.sqrt(5.))
+        for i in range(samples):
+            z = 1 - (i / float(samples - 1)) * 2
+            radius = math.sqrt(1 - z * z)
+            theta = phi * i
+            x = math.cos(theta) * radius
+            y = abs(math.sin(theta) * radius)
+            if y < 0.1: y = 0.1
+            points.append((x, y, z))
+        return points
+
+    sphere_points = fibonacci_sphere(10)
+    cameras = []
+    
+    # 根据场景范围调整相机距离
+    center_offset = Vector((0.5, 0.2, 0.5)) 
+    r = 2.5 
+    
+    for i, point in enumerate(sphere_points):
+        scaled_point = Vector((point[0]*r, point[1]*r, point[2]*r)) + center_offset
+        bpy.ops.object.camera_add(location=scaled_point)
+        cam = bpy.context.active_object
+        cam.name = f"Camera_{i+1}"
+        
+        direction = center_offset - scaled_point
+        rot_quat = direction.to_track_quat('-Z', 'Y')
+        cam.rotation_euler = rot_quat.to_euler()
+        cam.data.lens = 50
+        cameras.append(cam)
+    return cameras
+
+def setup_lighting():
+    # Sun
+    light_data = bpy.data.lights.new(name="Sun", type='SUN')
+    light_obj = bpy.data.objects.new(name="Sun", object_data=light_data)
+    bpy.context.collection.objects.link(light_obj)
+    light_obj.location = (5, 10, 5)
+    light_data.energy = 5.0
+    
+    # Area
+    area_data = bpy.data.lights.new(name="Area", type='AREA')
+    area_obj = bpy.data.objects.new(name="Area", object_data=area_data)
+    bpy.context.collection.objects.link(area_obj)
+    area_obj.location = (-2, 4, 3)
+    area_data.energy = 300.0
+    area_data.size = 5.0
+    
+    # Environment
+    if not bpy.context.scene.world:
+        world = bpy.data.worlds.new("World")
+        bpy.context.scene.world = world
+        world.use_nodes = True
+        bg_node = world.node_tree.nodes.get('Background')
+        if bg_node:
+            bg_node.inputs['Color'].default_value = (0.5, 0.5, 0.5, 1)
+
+def get_intrinsic(cam):
+    focal_px = 965.6844046797067 
+    return [[focal_px, 0.0, 400.0], [0.0, focal_px, 400.0], [0.0, 0.0, 1.0]]
+
+def get_c2w(cam):
+    matrix = np.array(cam.matrix_world)
+    return matrix[:3, :].tolist()
 
 def load_ply_frame(frame_idx):
     """
@@ -112,56 +195,91 @@ def load_ply_frame(frame_idx):
             # Only assign if not already assigned or if we want to force specific material
             mat_name = config.get("material_name")
             if mat_name:
-                 mat = ensure_material(mat_name, config["color"])
-                 if imported_obj.data.materials:
-                      imported_obj.data.materials[0] = mat
-                 else:
-                      imported_obj.data.materials.append(mat)
+                mat = ensure_material(mat_name, config["color"])
+                if imported_obj.data.materials:
+                    imported_obj.data.materials[0] = mat
+                else:
+                    imported_obj.data.materials.append(mat)
 
-def update_particles_handler(scene):
-    """
-    Blender 帧变化回调函数
-    """
-    load_ply_frame(scene.frame_current)
-
-def setup_handler():
-    """注册帧更新回调"""
-    handlers = bpy.app.handlers.frame_change_post
-    handlers[:] = [h for h in handlers if h.__name__ != "update_particles_handler"]
-    handlers.append(update_particles_handler)
-    print("Frame change handler registered.")
-
-def main():
-    print(f"Started Multi-PLY Sequence Loader...")
+def main(should_render=False):
+    print(f"Soft-Hard Rendering Started. Mode: {'RENDER' if should_render else 'PREVIEW'}")
     print(f"Input Directory: {INPUT_DIR}")
     
     # 1. 清理
     clean_scene()
+    cameras = setup_cameras()
+    setup_lighting()
     
-    # 2. 扫描文件以确定帧数范围 (只扫描第一个序列)
+    scene = bpy.context.scene
+    scene.render.engine = RENDER_ENGINE
+    scene.cycles.samples = SAMPLES
+    scene.cycles.device = 'GPU'
+    scene.render.resolution_x = 800
+    scene.render.resolution_y = 800
+    scene.render.image_settings.file_format = 'PNG'
+    
+    # 扫描文件
+    max_frame = 30
     try:
         if os.path.exists(INPUT_DIR):
              first_prefix = list(OBJECTS_CONFIG.values())[0]["prefix"]
              files = [f for f in os.listdir(INPUT_DIR) if f.startswith(first_prefix) and f.endswith(".ply")]
              if files:
                  max_frame = max([int(f.split('_')[-1].split('.')[0]) for f in files])
-                 bpy.context.scene.frame_start = 0
-                 bpy.context.scene.frame_end = max_frame
-                 print(f"Detected {max_frame+1} frames.")
-             else:
-                  bpy.context.scene.frame_end = 30
     except Exception as e:
-        print(f"Could not scan directory, defaulting frames: {e}")
-        bpy.context.scene.frame_end = 30
+        print(f"Could not scan: {e}")
     
-    # 3. 加载第0帧
-    load_ply_frame(0)
-    bpy.context.scene.frame_current = 0
+    scene.frame_start = 0
+    scene.frame_end = max_frame
+    
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+    # --- Preview Mode ---
+    if not should_render:
+        print("Preview Mode: Loading Frame 0...")
+        load_ply_frame(0)
+        scene.frame_set(0)
+        print(f"Setup complete. {max_frame+1} frames.")
+        return
+
+    # --- Render Mode ---
+    all_data = []
+    fps = 24
+    
+    for frame in range(0, max_frame + 1):
+        print(f"Rendering Frame {frame}/{max_frame}...")
+        load_ply_frame(frame)
+        scene.frame_set(frame)
+        time = frame / fps
         
-    # 4. 注册回调
-    setup_handler()
-    
-    print("Setup complete.")
+        for i, cam in enumerate(cameras):
+            scene.camera = cam
+            filename = f"r_{i}_{frame}.png"
+            scene.render.filepath = os.path.join(OUTPUT_DIR, filename)
+            bpy.ops.render.render(write_still=True)
+            
+            all_data.append({
+                "file_path": f"./soft_hard/{filename}",
+                "time": time,
+                "c2w": get_c2w(cam),
+                "intrinsic": get_intrinsic(cam)
+            })
+            
+    # Save Metadata
+    json_path = os.path.join(OUTPUT_DIR, "all_data.json")
+    with open(json_path, "w") as f:
+        json.dump(all_data, f, indent=4)
+    print(f"Done! Metadata {json_path}")
 
 if __name__ == "__main__":
-    main()
+    is_render = SHOULD_RENDER_DEFAULT or "--render" in sys.argv
+    
+    def frame_change_handler(scene):
+        load_ply_frame(scene.frame_current)
+            
+    bpy.app.handlers.frame_change_post.clear()
+    bpy.app.handlers.frame_change_post.append(frame_change_handler)
+    print("Frame change handler registered.")
+    
+    main(should_render=is_render)

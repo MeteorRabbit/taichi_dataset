@@ -3,19 +3,25 @@ import numpy as np
 import os
 import sys
 import math
+import json
 import collections
 from mathutils import Vector
 
 # --- Configuration ---
-# You can override these via environment variables or hardcode them here
-BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+if sys.platform == "win32":
+    BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+else:
+    BASE_DIR = "/root/workspace/taichi_dataset"
+
+SHOULD_RENDER_DEFAULT = False
+
 INPUT_DIR_DEFAULT = os.path.join(BASE_DIR, "particles_output/output_billiard_n-mpm")
 OUTPUT_DIR_DEFAULT = os.path.join(BASE_DIR, "render_output/billiard")
 
 RENDER_ENGINE = 'CYCLES'  # or 'BLENDER_EEVEE'
 SAMPLES = 128
 RESOLUTION_X = 800
-RESOLUTION_Y = 600
+RESOLUTION_Y = 800
 
 # Billiard Ball Materials
 # Standard Colors
@@ -33,6 +39,9 @@ BILLIARD_COLORS = [
 
 def clean_scene():
     """Clear the scene except for essential world nodes if any."""
+    if bpy.context.screen:
+        bpy.ops.screen.animation_cancel(restore_frame=False)
+    
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete()
 
@@ -76,70 +85,73 @@ def create_floor():
     #     floor.data.materials[0] = mat
     pass
 
-def setup_camera():
-    # Overhead-ish view
-    bpy.ops.object.camera_add(location=(1.0, 2.5, 1.0))
+def setup_cameras():
+    # 使用 Fibonacci Sphere 生成均匀视点
+    def fibonacci_sphere(samples=10):
+        points = []
+        phi = math.pi * (3. - math.sqrt(5.))
+        for i in range(samples):
+            z = 1 - (i / float(samples - 1)) * 2
+            radius = math.sqrt(1 - z * z)
+            theta = phi * i
+            x = math.cos(theta) * radius
+            y = abs(math.sin(theta) * radius)
+            if y < 0.1: y = 0.1
+            points.append((x, y, z))
+        return points
 
-    cam = bpy.context.active_object
-    cam.name = "Camera_Main"
+    sphere_points = fibonacci_sphere(10)
+    cameras = []
     
-    # Track to center
-    track_empty = bpy.data.objects.new("TrackTarget", None)
-    track_empty.location = (0, 0, 0)
-    bpy.context.collection.objects.link(track_empty)
+    # 根据场景范围调整相机距离
+    center_offset = Vector((0, 0.5, 0)) # 这里的中心根据台球场景调整
+    r = 2.0
     
-    track = cam.constraints.new(type='TRACK_TO')
-    track.target = track_empty
-    track.track_axis = 'TRACK_NEGATIVE_Z'
-    track.up_axis = 'UP_Y'
-    
-    return cam
+    for i, point in enumerate(sphere_points):
+        scaled_point = Vector((point[0]*r, point[1]*r, point[2]*r)) + center_offset
+        bpy.ops.object.camera_add(location=scaled_point)
+        cam = bpy.context.active_object
+        cam.name = f"Camera_{i+1}"
+        
+        direction = center_offset - scaled_point
+        rot_quat = direction.to_track_quat('-Z', 'Y')
+        cam.rotation_euler = rot_quat.to_euler()
+        cam.data.lens = 50
+        cameras.append(cam)
+    return cameras
 
 def setup_lighting():
-    # Key Light
+    # Sun
     light_data = bpy.data.lights.new(name="Sun", type='SUN')
     light_obj = bpy.data.objects.new(name="Sun", object_data=light_data)
     bpy.context.collection.objects.link(light_obj)
     light_obj.location = (5, 10, 5)
-    light_obj.rotation_euler = (math.radians(45), math.radians(30), 0)
     light_data.energy = 5.0
     
-    # Fill Light (Area)
+    # Area
     area_data = bpy.data.lights.new(name="Area", type='AREA')
     area_obj = bpy.data.objects.new(name="Area", object_data=area_data)
     bpy.context.collection.objects.link(area_obj)
-    area_obj.location = (-2, 5, 2)
-    area_obj.rotation_euler = (math.radians(-45), 0, 0)
-    area_data.energy = 200.0
+    area_obj.location = (-2, 4, 3)
+    area_data.energy = 300.0
     area_data.size = 5.0
     
     # Environment
     if not bpy.context.scene.world:
         world = bpy.data.worlds.new("World")
         bpy.context.scene.world = world
-    
-    world = bpy.context.scene.world
-    world.use_nodes = True
-    
-    # Robustly get background node (Fix for Blender 4.5+ where names/defaults might differ)
-    nodes = world.node_tree.nodes
-    links = world.node_tree.links
-    
-    bg_node = None
-    # Try finding by type instead of name
-    for node in nodes:
-        if node.type == 'BACKGROUND':
-            bg_node = node
-            break
-            
-    if not bg_node:
-        nodes.clear()
-        bg_node = nodes.new(type='ShaderNodeBackground')
-        output = nodes.new(type='ShaderNodeOutputWorld')
-        output.location = (200, 0)
-        links.new(bg_node.outputs[0], output.inputs[0])
+        world.use_nodes = True
+        bg_node = world.node_tree.nodes.get('Background')
+        if bg_node:
+            bg_node.inputs['Color'].default_value = (0.3, 0.3, 0.3, 1)
 
-    bg_node.inputs['Color'].default_value = (0.1, 0.1, 0.1, 1) # Dark environment
+def get_intrinsic(cam):
+    focal_px = 965.6844046797067 
+    return [[focal_px, 0.0, 400.0], [0.0, focal_px, 400.0], [0.0, 0.0, 1.0]]
+
+def get_c2w(cam):
+    matrix = np.array(cam.matrix_world)
+    return matrix[:3, :].tolist()
 
 def get_mesh_center(filepath):
     """Read PLY file and compute mesh center without importing to Blender."""
@@ -410,9 +422,10 @@ def setup_animated_scene(input_dir):
 
 
 def render_scene(should_render=True, input_dir=INPUT_DIR_DEFAULT, output_dir=OUTPUT_DIR_DEFAULT, use_animation=True):
-    print("Initializing Billiard Render Scene...")
+    print(f"Billiard Rendering Started. Mode: {'RENDER' if should_render else 'PREVIEW'}")
+    
     clean_scene()
-    setup_camera()
+    cameras = setup_cameras()
     setup_lighting()
     create_floor()
     
@@ -426,62 +439,74 @@ def render_scene(should_render=True, input_dir=INPUT_DIR_DEFAULT, output_dir=OUT
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    # Check max frames
+    # Check max frames logic
     frame_files = [f for f in os.listdir(input_dir) if f.endswith(".ply")]
-    if not frame_files:
-        print(f"No PLY files found in {input_dir}")
-        return
-
-    # Extract max frame number
-    max_frame = 0
-    for f in frame_files:
+    max_frame = 30
+    if frame_files:
         try:
             # frame_XXXX_...
-            part = f.split('_')[1]
-            num = int(part)
-            if num > max_frame: max_frame = num
-        except:
-            pass
-            
-    print(f"Found max frame: {max_frame}")
+            nums = []
+            for f in frame_files:
+                parts = f.split('_')
+                if len(parts) > 1 and parts[1].isdigit():
+                     nums.append(int(parts[1]))
+            if nums:
+                max_frame = max(nums)
+        except: pass
     
+    print(f"Found max frame: {max_frame}")
+    scene.frame_start = 0
+    scene.frame_end = max_frame
+
+    # --- Setup Animation ---
+    # Always set up animation in preview mode for scrubbing
     if use_animation:
-        # Use keyframe-based animation - balls can be scrubbed in timeline
         setup_animated_scene(input_dir)
+    
+    # --- Preview Mode ---
+    if not should_render:
+        print("Preview Mode: Scene setup complete.")
+        scene.frame_set(0)
+        return
+
+    # --- Render Mode ---
+    all_data = []
+    fps = 24
+    
+    for frame in range(max_frame + 1):
+        print(f"Rendering Frame {frame}/{max_frame}...")
+        scene.frame_set(frame)
+        time = frame / fps
         
-        if should_render:
-            # Render animation
-            scene.frame_start = 0
-            scene.frame_end = max_frame
-            for frame in range(max_frame + 1):
-                scene.frame_set(frame)
-                scene.render.filepath = os.path.join(output_dir, f"render_{frame:04d}.png")
-                print(f"Rendering frame {frame}...")
-                bpy.ops.render.render(write_still=True)
-        else:
-            print("Animation scene setup complete. You can now scrub the timeline!")
-            print(f"Timeline range: 0 to {max_frame}")
-    else:
-        # Original per-frame import mode
-        for frame in range(max_frame + 1):
-            # 1. Clear previous balls
+        if not use_animation:
+            # If not using animation, manually import per frame
             clear_balls()
-            
-            # 2. Import new positions
             import_frame_balls(input_dir, frame)
+        
+        # Render Multi-View
+        for i, cam in enumerate(cameras):
+            scene.camera = cam
+            filename = f"r_{i}_{frame}.png"
+            scene.render.filepath = os.path.join(output_dir, filename)
             
-            # 3. Render
-            if should_render:
-                scene.render.filepath = os.path.join(output_dir, f"render_{frame:04d}.png")
-                print(f"Rendering frame {frame}...")
-                bpy.ops.render.render(write_still=True)
-            else:
-                print(f"Frame {frame} loaded (Render skipped).")
+            bpy.ops.render.render(write_still=True)
+            
+            all_data.append({
+                "file_path": f"./billiard/{filename}",
+                "time": time,
+                "c2w": get_c2w(cam),
+                "intrinsic": get_intrinsic(cam)
+            })
+
+    # Save Metadata
+    json_path = os.path.join(output_dir, "all_data.json")
+    with open(json_path, "w") as f:
+        json.dump(all_data, f, indent=4)
+    print(f"Done! Metadata saved to {json_path}")
 
 
 if __name__ == "__main__":
     # Argument Parser override for Blender
-    # blender --background --python script.py -- [args]
     argv = sys.argv
     if "--" in argv:
         argv = argv[argv.index("--") + 1:]
@@ -492,10 +517,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, default=INPUT_DIR_DEFAULT, help='Input directory with particles')
     parser.add_argument('--output', type=str, default=OUTPUT_DIR_DEFAULT, help='Output directory for images')
-    parser.add_argument('--render', action='store_true', help='Enable rendering (default: False)')
+    parser.add_argument('--render', action='store_true', help='Force render mode')
     parser.add_argument('--no-animation', action='store_true', help='Use per-frame import instead of keyframes')
     
     args = parser.parse_args(argv)
     
-    render_scene(should_render=args.render, input_dir=args.input, output_dir=args.output, 
+    # Combine Default toggle with Arg
+    is_render = SHOULD_RENDER_DEFAULT or args.render
+    
+    render_scene(should_render=is_render, input_dir=args.input, output_dir=args.output, 
                  use_animation=not args.no_animation)

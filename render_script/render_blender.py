@@ -8,7 +8,10 @@ from mathutils import Vector
 # -- Blender 粒子转网格处理示例脚本
 # --- 配置 ---
 # 基础路径
-BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+if sys.platform == "win32":
+    BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+else:
+    BASE_DIR = "/root/workspace/taichi_dataset"
 
 # 预设5种材质名称 (修改这里选择当前渲染的材质)
 MATERIAL_TYPE = "sand"  # 可选: water, sand, elastic, plasticine, non_newtonian
@@ -419,7 +422,7 @@ def main(should_render=None):
     # 如果未指定 should_render，则检查命令行参数 "--render"
     if should_render is None:
         should_render = "--render" in sys.argv
-    print(f"渲染模式: {'启用' if should_render else '禁用'}")
+    print(f"渲染模式: {'启用' if should_render else '禁用 (预览模式)'}")
 
     clean_scene()
     
@@ -448,22 +451,32 @@ def main(should_render=None):
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
         
+    # --- 预览模式 (Preview Mode) ---
+    if not should_render:
+        # 仅加载第0帧以便预览
+        print("正在加载第0帧用于预览...")
+        update_mesh_for_frame(container, 0)
+        scene.frame_set(0)
+        print("预览模式设置完成。请手动拖动时间轴查看。")
+        return  # 立即退出，不经行渲染循环和元数据生成
+
+    # --- 渲染模式 (Render Mode) ---
     all_data = []
     
     # --- 第一阶段: 背景帧 (Frame -1) ---
     print("正在处理背景帧 (-1)...")
     container.hide_render = True # 隐藏物体
     # 禁用 Geometry Nodes 修改器以防止空网格崩溃
-    container.modifiers["Meshing"].show_render = False
-    container.modifiers["Meshing"].show_viewport = False
+    if "Meshing" in container.modifiers:
+        container.modifiers["Meshing"].show_render = False
+        container.modifiers["Meshing"].show_viewport = False
     
     for i, cam in enumerate(cameras):
         scene.camera = cam
         filename = f"r_{i}_-1.png"
         scene.render.filepath = os.path.join(OUTPUT_DIR, filename)
         
-        if should_render:
-            bpy.ops.render.render(write_still=True)
+        bpy.ops.render.render(write_still=True)
         
         time = -1.0 / fps
         c2w = get_c2w(cam)
@@ -478,13 +491,14 @@ def main(should_render=None):
         
     container.hide_render = False # 显示物体
     # 重新启用 Geometry Nodes 修改器
-    container.modifiers["Meshing"].show_render = True
-    container.modifiers["Meshing"].show_viewport = True
+    if "Meshing" in container.modifiers:
+        container.modifiers["Meshing"].show_render = True
+        container.modifiers["Meshing"].show_viewport = True
     
     # --- 第二阶段: 模拟帧 (0..13) ---
     print("正在处理模拟帧...")
     for frame in range(start_frame, end_frame + 1):
-        print(f"设置帧 {frame}...")
+        print(f"渲染帧 {frame}...")
         
         # 1. 先更新网格数据
         update_mesh_for_frame(container, frame) 
@@ -499,8 +513,7 @@ def main(should_render=None):
             filename = f"r_{i}_{frame}.png"
             scene.render.filepath = os.path.join(OUTPUT_DIR, filename)
             
-            if should_render:
-                 bpy.ops.render.render(write_still=True)
+            bpy.ops.render.render(write_still=True)
             
             c2w = get_c2w(cam)
             intrinsic = get_intrinsic(cam)
@@ -512,15 +525,14 @@ def main(should_render=None):
                 "intrinsic": intrinsic
             })
 
-    # 保存元数据 (保存到材质对应的输出目录)
+    # 保存元数据 (仅在渲染模式下保存)
     json_path = os.path.join(OUTPUT_DIR, "all_data.json")
     with open(json_path, "w") as f:
         json.dump(all_data, f, indent=4)
         
-    print(f"设置完成. 元数据已保存至 {json_path}.")
-    if not should_render:
-        print("注意: 渲染已跳过. 使用 '--render' 参数或在脚本中设置 should_render=True 以启用渲染.")
+    print(f"渲染完成. 元数据已保存至 {json_path}.")
 
 if __name__ == "__main__":
-    # 设置 should_render=True 启用渲染, False 跳过
-    main(should_render=True)
+    # 解析命令行参数
+    is_render = "--render" in sys.argv
+    main(should_render=is_render)

@@ -160,3 +160,35 @@ pip install numpy trimesh
 - 某些场景可能需要调整粒子数量以提高性能
 - Blender渲染可能计算密集；根据需要调整采样和分辨率
 - 该项目展示了从物理模拟到逼真渲染的完整管道
+
+## 脚本标准化进度表
+
+#
+conda gicv Windows/Linux）和预览/渲染模式分离。
+
+| 脚本名称 | 状态 | 跨平台路径 | 预览/渲染分离 | 默认开关 | 备注 |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `render_blender_multi_material.py` | ✅ 完成 | ✅ | ✅ | ✅ | 试点脚本，已验证 |
+| `render_blender_curling.py` | ✅ 完成 | ✅ | ✅ | ✅ | 用户保留了原有逻辑注释 |
+| `render_blender_solid_ground.py` | ✅ 完成 | ✅ | ✅ | ✅ | 保留了原有逻辑接口 |
+| `render_blender_billiard_mpm.py` | ✅ 完成 | ✅ | ✅ | ✅ | |
+| `render_blender_domino.py` | 🚫 跳过 | - | - | - | 原始效果不好，暂时不处理 |
+| `render_blender_soft_hard.py` | ✅ 完成 | ✅ | ✅ | ✅ | |
+| `render_blender_simple.py` | 🚫 跳过 | - | - | - | 调试脚本，跳过 |
+| `render_blender_billiard_n-mpm.py` | ✅ 完成 | ✅ | ✅ | ✅ | 保留了动画关键帧逻辑 |
+| `render_blender.py` | ✅ 完成 | ✅ | ✅ | ✅ | 通用脚本 |
+
+### 标准化脚本使用说明
+
+**交互式预览 (默认)**
+```bash
+# 在 Blender 中直接运行脚本，加载第0帧并暂停，方便时间轴查看
+blender -b -P render_script/script_name.py
+```
+
+**命令行渲染**
+```bash
+# 自动运行所有帧并保存元数据
+blender -b -P render_script/script_name.py -- --render
+```
+--------修改 `SHOULD_RENDER_DEFAULT = True`。

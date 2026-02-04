@@ -6,10 +6,22 @@ import math
 import json
 from mathutils import Vector
 
+# ... (previous imports)
+
 # --- 配置 ---
-BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+# ... (previous imports)
+
+# --- 配置 ---
+# BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+if sys.platform == "win32":
+    BASE_DIR = "D:/Experiments/gic/taichi_dataset"
+else:
+    BASE_DIR = "/root/workspace/taichi_dataset"
 INPUT_DIR = os.path.join(BASE_DIR, "particles_output/output_multi_material")
 OUTPUT_DIR = os.path.join(BASE_DIR, "render_output/multi_material")
+
+# 默认渲染开关 (方便在 IDE 中直接修改运行)
+SHOULD_RENDER_DEFAULT = False 
 
 # 粒子大小设置
 PARTICLE_RADIUS = 0.008
@@ -282,7 +294,7 @@ def get_c2w(cam):
     return matrix[:3, :].tolist()
 
 def main(should_render=False):
-    print("Multi-Material Rendering Started.")
+    print(f"Multi-Material Rendering Started. Mode: {'RENDER' if should_render else 'PREVIEW'}")
     clean_scene()
     
     cameras = setup_cameras()
@@ -307,7 +319,17 @@ def main(should_render=False):
     
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
-        
+
+    # --- Preview Mode ---
+    if not should_render:
+        print("Preview Mode: Loading Frame 0...")
+        update_ground(ground_container, 0)
+        update_object(0, mat_obj)
+        scene.frame_set(0)
+        print("Preview Setup Complete. Scrub timeline to view simulation.")
+        return
+
+    # --- Render Mode ---
     all_data = []
 
     print("Rendering Frames...")
@@ -327,9 +349,8 @@ def main(should_render=False):
             filename = f"r_{i}_{frame}.png"
             scene.render.filepath = os.path.join(OUTPUT_DIR, filename)
             
-            # Render if enabled
-            if should_render:
-                bpy.ops.render.render(write_still=True)
+            # Render
+            bpy.ops.render.render(write_still=True)
             
             # Metadata
             all_data.append({
@@ -344,12 +365,11 @@ def main(should_render=False):
     with open(json_path, "w") as f:
         json.dump(all_data, f, indent=4)
     print(f"Done! Metadata saved to {json_path}")
-    if not should_render:
-        print("Rendering was skipped (preview mode).")
 
 if __name__ == "__main__":
-    # Check for --render argument
-    is_render_mode = "--render" in sys.argv
+    # 解析命令行参数
+    # 如果命令行包含 --render，或者代码中 SHOULD_RENDER_DEFAULT 为 True，则启用渲染
+    is_render = SHOULD_RENDER_DEFAULT or "--render" in sys.argv
     
     # 注册 Frame Change Handler
     def frame_change_handler(scene):
@@ -371,4 +391,4 @@ if __name__ == "__main__":
     print("Frame change handler registered.")
     
     # 执行主流程
-    main(is_render_mode)
+    main(should_render=is_render)
