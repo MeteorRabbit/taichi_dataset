@@ -30,7 +30,7 @@ taichi_dataset/
 - **地面**：容器中的沙材质
 - **输出**：`particles_output/output_multi_material/`
 
-### 3. 多米诺 (simulate_domino.py)
+### 3. 多米诺 (simulate_domino.py)(暂时废弃)
 - **描述**：多个多米诺骨牌的连锁反应模拟
 - **物体**：多个多米诺块
 - **地面**：粘性表面以允许坠落/旋转
@@ -58,7 +58,11 @@ taichi_dataset/
 - **描述**：鸭子模型掉落到坚硬地面，保持网格完整性
 - **物体**：鸭子网格顶点作为粒子，重构为网格
 - **地面**：刚体碰撞体
-- **输出**：`particles_output/output_solid_ground/`
+### 8. 枕头保龄球 (simulate_pillow_bowling.py)
+- **描述**：硬质保龄球撞击软质枕头的模拟
+- **物体**：保龄球（硬）和枕头（软/布料）
+- **地面**：粘性表面
+- **输出**：`particles_output/output_pillow_bowling/`
 
 ## 材质
 
@@ -114,6 +118,8 @@ import render_blender_solid_ground
 
 - `meshes/billiard.ply`：台球网格
 - `meshes/toyduck.ply`：玩具鸭网格
+- `meshes/Bowling/Bowling.ply`：保龄球网格
+- `meshes/Pillow/pillow.ply`：枕头网格
 
 ## 依赖项
 
@@ -143,7 +149,7 @@ pip install numpy trimesh
 
 ## 输出格式
 
-- **模拟输出**：每帧包含粒子位置的NPY文件，加上metadata.json
+- **模拟输出**：每帧包含粒子位置的NPY/PLY文件，加上metadata.json
 - **渲染输出**：来自Blender的PNG/JPG图像或视频文件
 
 ## 配置
@@ -176,6 +182,7 @@ conda gicv Windows/Linux）和预览/渲染模式分离。
 | `render_blender_soft_hard.py` | ✅ 完成 | ✅ | ✅ | ✅ | |
 | `render_blender_simple.py` | 🚫 跳过 | - | - | - | 调试脚本，跳过 |
 | `render_blender_billiard_n-mpm.py` | ✅ 完成 | ✅ | ✅ | ✅ | 保留了动画关键帧逻辑 |
+| `render_blender_pillow_bowling.py` | ✅ 完成 | ✅ | ✅ | ✅ | 新增实验：枕头保龄球 |
 | `render_blender.py` | ✅ 完成 | ✅ | ✅ | ✅ | 通用脚本 |
 
 ### 标准化脚本使用说明
